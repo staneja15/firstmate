@@ -21,10 +21,14 @@
 #                          line, since the crew's own log gets no new entry once
 #                          firstmate hands it to a no-mistakes validation. A parked
 #                          crew is absorbed instead with its own long re-confirm
-#                          cadence, never as a wedge, and that cadence is anchored
-#                          on the crew's status file so a re-rendering idle pane
-#                          cannot reset it. Only when neither
-#                          absorb class applies does the log's last line decide:
+#                          cadence, never as a repeating wedge, and that cadence
+#                          is anchored on the crew's status file so a re-rendering
+#                          idle pane cannot reset it. A park on an ALREADY-DELIVERED
+#                          captain-relevant status also escalates once, and only
+#                          once per park spell, past FM_STALE_ESCALATE_SECS, because
+#                          a crew re-tasked behind that unchanged line writes no new
+#                          status. Only when neither absorb class applies does the
+#                          log's last line decide:
 #                          terminal (captain-relevant) or non-terminal (no verb),
 #                          both surfaced at once. A provably-working stale past the
 #                          wedge threshold also surfaces, with an "escalation N"
@@ -1043,11 +1047,12 @@ EOF
           #   - paused: the crew declared an external wait, or a declared pause or
           #     captain hold is paired with a confidently dead agent, so absorb on
           #     the long PAUSE_RESURFACE_SECS cadence instead of wedge-escalating;
-          #   - none: no running pipeline, idle pane, no busy signature, no declared
-          #     pause - the crew has STOPPED. Surface immediately so firstmate peeks
-          #     (it may be done via an interactive menu that wrote no done: status,
-          #     waiting on a decision, or wedged) instead of leaving the finish to
-          #     wait out the timer.
+          #   - none: no running pipeline, idle pane, no busy signature, or a
+          #     declaration whose agent is not confidently dead. A parked crew keeps
+          #     its bounded cadence (see below); otherwise the crew has STOPPED and
+          #     is surfaced immediately so firstmate peeks (it may be done via an
+          #     interactive menu that wrote no done: status, waiting on a decision,
+          #     or wedged) instead of leaving the finish to wait out the timer.
           if [ "$(cat "$sf" 2>/dev/null || true)" != "$h" ]; then
             task=$(window_to_task "$w" "$STATE")
             case "$(pause_state_class "$w" "$task")" in
