@@ -403,9 +403,9 @@ park_wedge_check() {  # <window> <key> <verb>
   esac
   age=$(( $(date +%s) - since ))
   [ "$age" -ge "$STALE_ESCALATE_SECS" ] || return 0
-  printf 'fired' > "$f"
   reason="stale: $win (idle ${age}s behind an already-delivered $verb, possible wedge - the crew may have been re-tasked and stopped since; peek before re-absorbing)"
   fm_wake_append stale "$win" "$reason" || exit 1
+  printf 'fired' > "$f"
   wake "$reason"
 }
 
@@ -1011,14 +1011,15 @@ EOF
               mark_surfaced "$STATE/$(window_to_task "$w" "$STATE").status"
               wake "stale: $w"
             fi
-          elif [ -e "$ssf" ] || [ -s "$ewf" ]; then
+          elif [ -e "$ssf" ]; then
             # This exact hash was already overridden as provably-working (a
-            # wedge timer is running for it, or it has already escalated at
-            # least once) - keep treating it that way without re-reading the
-            # crew state every poll, and without letting the still-captain-
-            # relevant log line re-surface it. Checked before the park handler
-            # so an escalating run keeps its uncapped wedge cadence even when
-            # the terminal line behind it happens to be already delivered.
+            # wedge timer is running for it) - keep treating it that way
+            # without re-reading the crew state every poll, and without
+            # letting the still-captain-relevant log line re-surface it.
+            # Checked before the park handler so an active run behind a stale
+            # terminal line keeps its own wedge timer. wedge_timer_check clears
+            # the timer when it escalates, so a frozen pane leaves this branch
+            # after one escalation and falls through to the park handler below.
             wedge_timer_check "$w" "$ssf" "stale (overridden terminal status)" "$ewf"
           elif handle_parked_stale "$w" "$task" "$h"; then
             # Repeat poll of a park's own hash. A parked pane that STOPS

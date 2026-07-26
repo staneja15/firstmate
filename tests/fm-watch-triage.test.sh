@@ -1039,6 +1039,47 @@ test_delivered_terminal_park_escalates_once_when_its_run_dies() {
   pass "a delivered captain-relevant park escalates once when its run dies, while a declared wait never does"
 }
 
+# The provably-working override and the park handler share the repeat-hash chain,
+# and the override is checked first so an active run keeps its own wedge timer.
+# wedge_timer_check clears that timer when it escalates, which is what bounds the
+# override to one escalation per frozen hash and then hands the window to the park
+# handler. Keeping the override latched past its own timer - for instance by also
+# testing the escalation counter, which is not cleared on a byte-identical pane -
+# would re-enter the timer-repair path every window and turn this branch into the
+# unbounded wake loop the whole change exists to remove, while permanently
+# shadowing both of the park handler's nets.
+test_overridden_terminal_escalation_hands_off_to_the_park_handler() {
+  local dir state fakebin out window key result
+
+  dir=$(make_parked_case parked-override-handoff done test:fm-done \
+    'done: implementation complete, ready to validate')
+  state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; window=test:fm-done
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  freeze_parked_pane "$dir" "$window"
+  # This frozen hash was already absorbed as provably-working, and its wedge
+  # timer is now past the escalation threshold.
+  printf '%s\n' $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  result=$(park_rearm "$state" "$fakebin" "$window" "$dir/pane.txt" "$out" 0 \
+    FM_PAUSE_RESURFACE_SECS=999999 FM_STALE_ESCALATE_SECS=240 \
+    "FM_FAKE_CREW_STATE=state: working · source: run-step · validating (running)")
+  [ "$result" = woke ] || fail "an overridden terminal stale past its wedge timer did not escalate: $(cat "$out")"
+  grep -F "possible wedge" "$out" >/dev/null || fail "the override escalation did not flag a possible wedge: $(cat "$out")"
+  [ ! -e "$state/.stale-since-$key" ] || fail "the override escalation kept its wedge timer"
+
+  # Same frozen pane, nothing changed. The override must NOT re-arm itself off the
+  # surviving escalation counter; the park handler takes the window from here.
+  result=$(park_rearm "$state" "$fakebin" "$window" "$dir/pane.txt" "$out" 0 \
+    FM_PAUSE_RESURFACE_SECS=999999 FM_STALE_ESCALATE_SECS=240 \
+    "FM_FAKE_CREW_STATE=state: working · source: run-step · validating (running)")
+  [ "$result" = absorbed ] || fail "the override escalation repeated on an unchanged frozen pane: $(cat "$out")"
+  [ "$(stale_wake_count "$state" "$window")" -eq 1 ] \
+    || fail "the override escalation queued more than one wake on an unchanged frozen pane"
+  [ -s "$state/.park-since-$key" ] \
+    || fail "the frozen pane never reached the park handler after its override escalation"
+
+  pass "an overridden terminal stale escalates once on a frozen pane, then hands the window to the park handler"
+}
+
 test_secondmate_paused_resurfaces_in_normal_mode() {
   local dir state fakebin out capture_file statusf window key pane_hash sig pid back
   dir=$(make_case secondmate-paused-resurface); state="$dir/state"; fakebin="$dir/fakebin"
@@ -1582,6 +1623,7 @@ test_parked_pane_rechecks_once_per_window
 test_parked_gate_does_not_silence_real_wedges
 test_parked_static_pane_still_rechecks
 test_delivered_terminal_park_escalates_once_when_its_run_dies
+test_overridden_terminal_escalation_hands_off_to_the_park_handler
 test_secondmate_paused_resurfaces_in_normal_mode
 test_secondmate_nonpaused_stale_remains_suppressed
 test_secondmate_unpause_clears_pause_tracking
