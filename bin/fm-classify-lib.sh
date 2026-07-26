@@ -140,6 +140,21 @@ status_is_paused_or_captain_held() {  # <status-line>
   [ "$verb" = "${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}" ]
 }
 
+# 0 if a status line declares a state whose idle pane is EXPECTED rather than
+# suspicious, because the crew has reported where it stopped and is now waiting on
+# somebody else: a declared external-wait pause, a verified captain-held transfer,
+# or a captain-relevant verb (done, needs-decision, blocked, failed). This is the
+# vocabulary half of the park test only. It says nothing about whether firstmate
+# has actually been told; a consumer that must not swallow an undelivered terminal
+# status pairs this with its own surfaced-marker state (the watcher's
+# crew_is_parked does exactly that).
+status_is_parked() {  # <status-line>
+  local line=$1
+  [ -n "$line" ] || return 1
+  status_is_paused_or_captain_held "$line" && return 0
+  status_is_captain_relevant "$line"
+}
+
 # --- durable keyed decisions ------------------------------------------------
 #
 # The status stream is an append-only EVENT log. Reading it last-event-wins
