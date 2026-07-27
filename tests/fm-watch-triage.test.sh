@@ -648,9 +648,10 @@ test_nonterminal_stale_paused_absorbed_then_resurfaced() {
 # fm-crew-state then authoritatively reports stopped rather than paused, but the
 # confirmed-dead agent plus the declared wait or captain-held transfer must retain
 # bounded pause handling.
-# A still-live agent at an external-decision gate is the disconfirming case: it
-# must surface once, while the unchanged hash must not append the same wake on
-# every watcher re-arm.
+# A still-live agent at an external-decision gate is the disconfirming case: its
+# declaration reaches firstmate through the status signal, so the stale path adds
+# no second immediate wake and the unchanged hash must not append one on every
+# watcher re-arm either.
 test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
   local dir state fakebin out capture_file statusf window key pane_hash sig pid back round wakes bare
   dir=$(make_case exited-declared-pause); state="$dir/state"; fakebin="$dir/fakebin"
@@ -714,25 +715,29 @@ test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
   printf 'idle external-decision gate\n' > "$capture_file"
   printf 'window=%s\nkind=ship\nharness=grok\nbackend=tmux\n' "$window" > "$state/gate.meta"
   printf 'paused: waiting at an active external-decision gate\n' > "$statusf"
-  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-gate_status"
   key=$(printf '%s' "$window" | tr ':/.' '___')
   pane_hash=$(hash_text "idle external-decision gate")
   printf '%s' "$pane_hash" > "$state/.hash-$key"
   printf '1\n' > "$state/.count-$key"
 
-  # First sight must surface promptly so a live external-decision gate is not
-  # hidden behind the pause cadence.
+  # The declaration itself must still reach firstmate. It is a no-verb status
+  # whose crew is not provably working, so the SIGNAL path surfaces it - which is
+  # why the stale path adding a second immediate wake for the same declaration is
+  # pure duplication, and duplication that re-fires on every pane re-render.
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE='state: paused · source: status-log · waiting at an active external-decision gate' \
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" &
   pid=$!
-  wait_for_exit "$pid" 40 || fail "live external-decision gate did not surface immediately"
+  wait_for_exit "$pid" 40 || fail "a live external-decision gate's declaration was never delivered"
+  grep -F "signal: $statusf" "$out" >/dev/null \
+    || fail "a live external-decision gate's declaration did not surface through the status signal: $(cat "$out")"
 
   # Re-arm with the stale timer already beyond the wedge threshold. This is the
-  # exact unchanged-hash fallback after the immediate surface: it must retain
-  # the pause cadence and discard any residual wedge timer instead of emitting
-  # a second possible-wedge wake.
+  # exact unchanged-hash fallback after the declaration was delivered: it must
+  # retain the pause cadence and discard any residual wedge timer instead of
+  # emitting a possible-wedge wake.
+  sig=$(seen_sig "$statusf"); printf '%s' "$sig" > "$state/.seen-gate_status"
   printf '%s\n' $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_FAKE_TMUX_CURRENT_COMMAND=grok FM_FAKE_CREW_STATE='state: paused · source: status-log · waiting at an active external-decision gate' \
@@ -741,16 +746,491 @@ test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
   pid=$!
   if ! wait_live "$pid" 30; then
     reap "$pid"
-    fail "live external-decision gate escalated on the wedge timer after its immediate surface: $(cat "$out")"
+    fail "live external-decision gate escalated on the wedge timer after its declaration was delivered: $(cat "$out")"
   fi
-  [ -e "$state/.paused-$key" ] || { reap "$pid"; fail "live external-decision gate lost its pause cadence marker"; }
   [ ! -e "$state/.stale-since-$key" ] || { reap "$pid"; fail "live external-decision gate retained the wedge timer"; }
   reap "$pid"
   wakes=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' "$state/.wake-queue")
   bare=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w && $5 == "stale: " w { n++ } END { print n + 0 }' "$state/.wake-queue")
-  [ "$wakes" -eq 1 ] || fail "live external-decision gate should surface once, got $wakes wakes"
-  [ "$bare" -eq 1 ] || fail "live external-decision gate lost its immediate bare stale surface"
-  pass "exited declared-pause and captain-held panes use bounded pause cadence while a live decision gate still surfaces once"
+  [ "$wakes" -eq 0 ] || fail "live external-decision gate added $wakes stale wakes on top of its delivered declaration"
+  [ "$bare" -eq 0 ] || fail "live external-decision gate emitted $bare bare stale wakes for an already-declared wait"
+  pass "exited declared-pause and captain-held panes use bounded pause cadence while a live decision gate declares itself once through the status signal"
+}
+
+# --- the parked-idle hot loop (live 2026-07-20) ------------------------------
+# A crew that has declared where it stopped - a declared external-wait pause, or a
+# captain-relevant status firstmate has already been shown - is SUPPOSED to sit
+# idle. Its pane nevertheless keeps re-rendering (an elapsed clock, a context
+# counter), so every re-render is a NEW stale hash and therefore a fresh first
+# sight. Because the watcher exits on a wake, surfacing on first sight re-fires
+# once per watcher cycle for as long as the crew stays parked: the live symptom
+# was two crews awaiting a merge decision each waking firstmate every couple of
+# minutes for a whole session, each wake costing a full turn with nothing to do.
+# These cases pin the fix in both directions - a park is re-confirmed only on the
+# bounded cadence, and a crew that genuinely stopped responding still surfaces.
+
+# Drive one watcher cycle against a re-rendered pane, exactly as a re-arm does.
+# Echoes "absorbed" when the cycle kept blocking, "woke" when it exited with a
+# reason. Extra environment is passed through as NAME=VALUE arguments.
+park_rearm() {  # <state> <fakebin> <window> <capture> <out> <round> [NAME=VALUE...]
+  local capture=$4 round=$6
+  # The pane re-renders between cycles, as a live agent's TUI does.
+  printf 'idle parked agent pane\ncontext left: %s%%\n' "$((90 - round))" > "$capture"
+  park_cycle "$1" "$2" "$3" "$4" "$5" "${@:7}"
+}
+
+# Same cycle against a pane that is visibly WORKING again, which is what a crew
+# re-tasked behind an unchanged terminal status line looks like: it writes no new
+# status, and its tail churns on every poll exactly as a working TUI's does, so the
+# busy signature is the only resume evidence the watcher ever gets from it.
+park_rearm_busy() {  # <state> <fakebin> <window> <capture> <out> <round> [NAME=VALUE...]
+  local capture=$4 round=$6
+  printf 'working the re-task\nesc to interrupt · %ss elapsed\n' "$((10 + round))" > "$capture"
+  park_cycle "$1" "$2" "$3" "$4" "$5" "${@:7}"
+}
+
+# Drive one watcher cycle against whatever <capture> already holds.
+park_cycle() {  # <state> <fakebin> <window> <capture> <out> [NAME=VALUE...]
+  local state=$1 fakebin=$2 window=$3 capture=$4 out=$5 pid
+  shift 5
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture" \
+    FM_FAKE_TMUX_CURRENT_COMMAND=claude \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    env "$@" "$WATCH" >> "$out" &
+  pid=$!
+  if wait_live "$pid" 45; then reap "$pid"; printf 'absorbed'; else wait "$pid" 2>/dev/null; printf 'woke'; fi
+}
+
+# Fixture: a crew parked on <status-line>, its pane already stably stale, its
+# status signal already consumed, and (for a captain-relevant park) its status
+# already recorded as delivered to firstmate.
+make_parked_case() {  # <case> <task> <window> <status-line>
+  local name=$1 task=$2 window=$3 line=$4 dir state sig
+  dir=$(make_case "$name"); state="$dir/state"
+  printf 'window=%s\nkind=ship\nharness=claude\nbackend=tmux\n' "$window" > "$state/$task.meta"
+  printf '%s\n' "$line" > "$state/$task.status"
+  sig=$(seen_sig "$state/$task.status"); printf '%s' "$sig" > "$state/.seen-${task}_status"
+  status_is_captain_relevant "$line" && printf '%s' "$line" > "$state/.hb-surfaced-$task"
+  printf 'idle parked agent pane\ncontext left: 90%%\n' > "$dir/pane.txt"
+  printf '%s' "$(hash_text "$(cat "$dir/pane.txt")")" > "$state/.hash-$(printf '%s' "$window" | tr ':/.' '___')"
+  printf '1\n' > "$state/.count-$(printf '%s' "$window" | tr ':/.' '___')"
+  printf '%s\n' "$dir"
+}
+
+# Seed a park's escalation timer as if the CURRENT park spell had already been idle
+# <seconds-ago>. The marker names the spell it belongs to - the status file mtime -
+# so it must be written after any backdating of that status file.
+seed_park_timer() {  # <state> <task> <window> <seconds-ago>
+  local state=$1 task=$2 key
+  key=$(printf '%s' "$3" | tr ':/.' '___')
+  printf '%s %s' "$(file_mtime "$state/$task.status")" "$(( $(date +%s) - $4 ))" \
+    > "$state/.park-since-$key"
+}
+
+# The escalation latch as it reads once spent: the spell it was spent on, then fired.
+fired_latch() {  # <state> <task>
+  printf '%s fired' "$(file_mtime "$1/$2.status")"
+}
+
+# 0 when the marker holds a LIVE escalation timer for <task>'s CURRENT park spell -
+# an unspent timer the watcher itself started, rather than a latch spent on an
+# earlier spell.
+park_timer_is_live() {  # <state> <task> <window>
+  local state=$1 task=$2 key rec spell
+  key=$(printf '%s' "$3" | tr ':/.' '___')
+  rec=$(cat "$state/.park-since-$key" 2>/dev/null || true)
+  spell=$(file_mtime "$state/$task.status")
+  case "$rec" in
+    "$spell "[0-9]*) return 0 ;;
+  esac
+  return 1
+}
+
+stale_wake_count() {  # <state> <window>
+  [ -e "$1/.wake-queue" ] || { printf '0'; return; }
+  awk -F '\t' -v w="$2" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' "$1/.wake-queue"
+}
+
+# A parked crew whose pane keeps re-rendering must stay silent across re-arms.
+# Against the pre-fix watcher each round below surfaced a bare "stale: <window>",
+# one per cycle, indefinitely.
+test_parked_pane_churn_does_not_hot_loop() {
+  local dir state fakebin out window round result
+
+  # A declared external-wait pause, agent still alive.
+  dir=$(make_parked_case parked-churn-paused paused test:fm-paused \
+    'paused: waiting on the captain to merge the PR')
+  state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; window=test:fm-paused
+  round=1
+  while [ "$round" -le 4 ]; do
+    result=$(park_rearm "$state" "$fakebin" "$window" "$dir/pane.txt" "$out" "$round" \
+      FM_PAUSE_RESURFACE_SECS=3600 \
+      "FM_FAKE_CREW_STATE=state: paused · source: status-log · waiting on the captain")
+    [ "$result" = absorbed ] || fail "declared pause woke on re-arm $round of a re-rendering pane: $(cat "$out")"
+    round=$((round + 1))
+  done
+  [ "$(stale_wake_count "$state" "$window")" -eq 0 ] \
+    || fail "declared pause queued stale wakes across four re-arms of a re-rendering pane"
+
+  # A needs-decision park firstmate has already been shown.
+  dir=$(make_parked_case parked-churn-decision decision test:fm-decision \
+    'needs-decision: ship the fallback or wait for upstream?')
+  state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; window=test:fm-decision
+  round=1
+  while [ "$round" -le 4 ]; do
+    result=$(park_rearm "$state" "$fakebin" "$window" "$dir/pane.txt" "$out" "$round" \
+      FM_PAUSE_RESURFACE_SECS=3600 \
+      "FM_FAKE_CREW_STATE=state: parked · source: run-step · parked at review")
+    [ "$result" = absorbed ] || fail "delivered needs-decision woke on re-arm $round of a re-rendering pane: $(cat "$out")"
+    round=$((round + 1))
+  done
+  [ "$(stale_wake_count "$state" "$window")" -eq 0 ] \
+    || fail "delivered needs-decision queued stale wakes across four re-arms of a re-rendering pane"
+
+  pass "a parked crew (declared pause or delivered needs-decision) does not wake on first sight and does not hot-loop across re-arms"
+}
+
+# The park is still re-confirmed: once per recheck window, and only once, so a
+# crew that quietly wedges behind a stale park line cannot rot invisibly.
+test_parked_pane_rechecks_once_per_window() {
+  local dir state fakebin out window back result
+
+  dir=$(make_parked_case parked-recheck decision test:fm-decision \
+    'needs-decision: ship the fallback or wait for upstream?')
+  state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; window=test:fm-decision
+  # Age the park past the recheck window (the cadence is anchored on the crew's
+  # own status file, so a re-rendering pane cannot keep resetting it).
+  back=$(( $(date +%s) - 500 ))
+  if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$state/decision.status"
+  else touch -m -d "@$back" "$state/decision.status"; fi
+  printf '%s' "$(seen_sig "$state/decision.status")" > "$state/.seen-decision_status"
+
+  result=$(park_rearm "$state" "$fakebin" "$window" "$dir/pane.txt" "$out" 1 \
+    FM_PAUSE_RESURFACE_SECS=240 FM_STALE_ESCALATE_SECS=240 \
+    "FM_FAKE_CREW_STATE=state: parked · source: run-step · parked at review")
+  [ "$result" = woke ] || fail "a park past its recheck window was never re-confirmed: $(cat "$out")"
+  grep -F "rechecked on a long cadence not a wedge" "$out" >/dev/null \
+    || fail "the park recheck was not labelled a recheck: $(cat "$out")"
+  grep -F "possible wedge" "$out" >/dev/null && fail "a park recheck was mislabelled a possible wedge"
+  [ "$(stale_wake_count "$state" "$window")" -eq 1 ] \
+    || fail "the park recheck did not queue exactly one wake"
+
+  # Immediately re-armed, still past the window: the throttle must hold.
+  result=$(park_rearm "$state" "$fakebin" "$window" "$dir/pane.txt" "$out" 2 \
+    FM_PAUSE_RESURFACE_SECS=240 FM_STALE_ESCALATE_SECS=240 \
+    "FM_FAKE_CREW_STATE=state: parked · source: run-step · parked at review")
+  [ "$result" = absorbed ] || fail "a park re-confirmed twice inside one recheck window: $(cat "$out")"
+  [ "$(stale_wake_count "$state" "$window")" -eq 1 ] \
+    || fail "a park queued more than one wake per recheck window"
+
+  # The live incident's exact shape: a declared pause whose agent is still alive,
+  # so pause_state_class cannot confirm the dead-agent path. It must still be
+  # re-confirmed once past the window rather than left silent forever.
+  dir=$(make_parked_case parked-recheck-live-pause paused test:fm-paused \
+    'paused: waiting on the captain to merge the PR')
+  state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; window=test:fm-paused
+  back=$(( $(date +%s) - 500 ))
+  if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$state/paused.status"
+  else touch -m -d "@$back" "$state/paused.status"; fi
+  printf '%s' "$(seen_sig "$state/paused.status")" > "$state/.seen-paused_status"
+  result=$(park_rearm "$state" "$fakebin" "$window" "$dir/pane.txt" "$out" 1 \
+    FM_PAUSE_RESURFACE_SECS=240 FM_STALE_ESCALATE_SECS=240 \
+    "FM_FAKE_CREW_STATE=state: paused · source: status-log · waiting on the captain")
+  [ "$result" = woke ] || fail "a live-agent declared pause past its window was never re-confirmed: $(cat "$out")"
+  grep -F "rechecked on a long cadence not a wedge" "$out" >/dev/null \
+    || fail "the live-agent pause recheck was not labelled a recheck: $(cat "$out")"
+  grep -F "possible wedge" "$out" >/dev/null && fail "a live-agent pause recheck was mislabelled a possible wedge"
+  [ "$(stale_wake_count "$state" "$window")" -eq 1 ] \
+    || fail "the live-agent pause recheck did not queue exactly one wake"
+
+  pass "a park is re-confirmed exactly once per recheck window, labelled a recheck rather than a wedge"
+}
+
+# The park gate must not become a blanket silencer. An undelivered terminal
+# status still surfaces, and a crew that simply stopped responding - no
+# declaration at all - still surfaces even while its pane re-renders.
+test_parked_gate_does_not_silence_real_wedges() {
+  local dir state fakebin out window result
+
+  # Same needs-decision line, but never delivered: no .hb-surfaced marker.
+  dir=$(make_parked_case parked-undelivered decision test:fm-decision \
+    'needs-decision: ship the fallback or wait for upstream?')
+  state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; window=test:fm-decision
+  rm -f "$state/.hb-surfaced-decision"
+  result=$(park_rearm "$state" "$fakebin" "$window" "$dir/pane.txt" "$out" 1 \
+    FM_PAUSE_RESURFACE_SECS=3600 \
+    "FM_FAKE_CREW_STATE=state: parked · source: run-step · parked at review")
+  [ "$result" = woke ] || fail "an undelivered needs-decision was swallowed by the park gate: $(cat "$out")"
+  grep -F "stale: $window" "$out" >/dev/null || fail "an undelivered needs-decision did not surface its stale wake"
+
+  # No declaration at all: the crew stopped responding mid-work. Its pane
+  # re-renders exactly like a parked one, so this is the disconfirming control.
+  dir=$(make_parked_case parked-wedge stopped test:fm-stopped 'working: compiling step 2')
+  state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; window=test:fm-stopped
+  result=$(park_rearm "$state" "$fakebin" "$window" "$dir/pane.txt" "$out" 1 \
+    FM_PAUSE_RESURFACE_SECS=3600 \
+    "FM_FAKE_CREW_STATE=state: unknown · source: none · no current-state source available")
+  [ "$result" = woke ] || fail "an unresponsive crew with no declared park was absorbed: $(cat "$out")"
+  grep -F "stale: $window" "$out" >/dev/null || fail "an unresponsive crew did not surface its stale wake"
+  [ "$(stale_wake_count "$state" "$window")" -eq 1 ] || fail "an unresponsive crew's stale wake was not queued"
+
+  pass "the park gate still surfaces an undelivered terminal status and a crew that genuinely stopped responding"
+}
+
+# Backdate a park's own status file so it sits past the recheck window, and
+# re-seed the signal signature the watcher compares against.
+age_park_status() {  # <state> <task> <seconds>
+  local state=$1 task=$2 back
+  back=$(( $(date +%s) - $3 ))
+  if [ "$(uname)" = Darwin ]; then touch -mt "$(date -r "$back" '+%Y%m%d%H%M.%S')" "$state/$task.status"
+  else touch -m -d "@$back" "$state/$task.status"; fi
+  printf '%s' "$(seen_sig "$state/$task.status")" > "$state/.seen-${task}_status"
+}
+
+# The crew's next status event: a new declared line, already delivered to firstmate
+# (as the .hb-surfaced marker records) with its signal already consumed, so the
+# status event itself is the only thing separating the new park spell from the old.
+deliver_park_status() {  # <state> <task> <status-line>
+  local state=$1 task=$2 line=$3
+  printf '%s\n' "$line" >> "$state/$task.status"
+  printf '%s' "$line" > "$state/.hb-surfaced-$task"
+  printf '%s' "$(seen_sig "$state/$task.status")" > "$state/.seen-${task}_status"
+}
+
+# Freeze the park's pane: mark this exact hash as already classified, so the next
+# poll is a REPEAT of a hash the watcher has seen rather than a fresh first sight.
+freeze_parked_pane() {  # <dir> <window>
+  local dir=$1 key
+  key=$(printf '%s' "$2" | tr ':/.' '___')
+  printf '%s' "$(hash_text "$(cat "$dir/pane.txt")")" > "$dir/state/.stale-$key"
+}
+
+# A parked pane that stops re-rendering produces no further first sight, so the
+# repeat-poll path is the ONLY path left for it. The bounded recheck has to run
+# there too, or a park that quietly wedges is absorbed silently forever - the
+# absorb would trade a hot loop for permanent silence.
+test_parked_static_pane_still_rechecks() {
+  local dir state fakebin out window result
+
+  dir=$(make_parked_case parked-static-recheck decision test:fm-decision \
+    'needs-decision: ship the fallback or wait for upstream?')
+  state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; window=test:fm-decision
+  freeze_parked_pane "$dir" "$window"
+  age_park_status "$state" decision 500
+
+  # Round 0 re-renders the pane to byte-identical content: a frozen pane.
+  result=$(park_rearm "$state" "$fakebin" "$window" "$dir/pane.txt" "$out" 0 \
+    FM_PAUSE_RESURFACE_SECS=240 FM_STALE_ESCALATE_SECS=999999 \
+    "FM_FAKE_CREW_STATE=state: parked · source: run-step · parked at review")
+  [ "$result" = woke ] || fail "a frozen delivered needs-decision park never reached its recheck: $(cat "$out")"
+  grep -F "rechecked on a long cadence not a wedge" "$out" >/dev/null \
+    || fail "the frozen park's recheck was not labelled a recheck: $(cat "$out")"
+  [ "$(stale_wake_count "$state" "$window")" -eq 1 ] \
+    || fail "the frozen park's recheck did not queue exactly one wake"
+
+  # And it stays throttled on the repeat path exactly as it does on first sight.
+  result=$(park_rearm "$state" "$fakebin" "$window" "$dir/pane.txt" "$out" 0 \
+    FM_PAUSE_RESURFACE_SECS=240 FM_STALE_ESCALATE_SECS=999999 \
+    "FM_FAKE_CREW_STATE=state: parked · source: run-step · parked at review")
+  [ "$result" = absorbed ] || fail "a frozen park re-confirmed twice inside one recheck window: $(cat "$out")"
+  [ "$(stale_wake_count "$state" "$window")" -eq 1 ] \
+    || fail "a frozen park queued more than one wake per recheck window"
+
+  pass "a park whose pane stops re-rendering still reaches its bounded recheck on the repeat-poll path"
+}
+
+# A captain-relevant park is only PRESUMED to be waiting on the captain. Under the
+# sparse status contract a crew re-tasked after done/needs-decision/blocked/failed
+# writes no new status line, so the identical park line also describes a re-tasked
+# crew whose run has since died. That case must escalate at FM_STALE_ESCALATE_SECS
+# rather than hide for a whole recheck window - and it must escalate ONCE, or the
+# escalation itself becomes the hot loop this fix removed.
+test_delivered_terminal_park_escalates_once_when_its_run_dies() {
+  local dir state fakebin out window key result
+
+  dir=$(make_parked_case parked-wedge-behind-delivered decision test:fm-decision \
+    'needs-decision: ship the fallback or wait for upstream?')
+  state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; window=test:fm-decision
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  freeze_parked_pane "$dir" "$window"
+  # The park has been idle past the escalation threshold. The recheck window is
+  # far away, so only the escalation can produce a wake here.
+  seed_park_timer "$state" decision "$window" 500
+  result=$(park_rearm "$state" "$fakebin" "$window" "$dir/pane.txt" "$out" 0 \
+    FM_PAUSE_RESURFACE_SECS=999999 FM_STALE_ESCALATE_SECS=240 \
+    "FM_FAKE_CREW_STATE=state: unknown · source: none · no current-state source available")
+  [ "$result" = woke ] || fail "a dead run behind a delivered needs-decision never escalated: $(cat "$out")"
+  grep -F "possible wedge" "$out" >/dev/null || fail "the park escalation did not flag a possible wedge: $(cat "$out")"
+  grep -F "already-delivered needs-decision" "$out" >/dev/null \
+    || fail "the park escalation did not name the delivered status it is idling behind: $(cat "$out")"
+  [ "$(cat "$state/.park-since-$key" 2>/dev/null || true)" = "$(fired_latch "$state" decision)" ] \
+    || fail "the park escalation did not latch onto the spell it was spent on"
+
+  # Latched: the same frozen pane must not escalate again.
+  result=$(park_rearm "$state" "$fakebin" "$window" "$dir/pane.txt" "$out" 0 \
+    FM_PAUSE_RESURFACE_SECS=999999 FM_STALE_ESCALATE_SECS=240 \
+    "FM_FAKE_CREW_STATE=state: unknown · source: none · no current-state source available")
+  [ "$result" = absorbed ] || fail "the park escalation repeated on the same frozen pane: $(cat "$out")"
+  [ "$(stale_wake_count "$state" "$window")" -eq 1 ] \
+    || fail "the park escalation queued more than one wake"
+
+  # A declared external wait keeps the recheck as its only cadence: the crew named
+  # its own blocker, so it must never escalate as a wedge.
+  dir=$(make_parked_case parked-declared-no-wedge paused test:fm-paused \
+    'paused: waiting on the captain to merge the PR')
+  state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; window=test:fm-paused
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  freeze_parked_pane "$dir" "$window"
+  seed_park_timer "$state" paused "$window" 500
+  result=$(park_rearm "$state" "$fakebin" "$window" "$dir/pane.txt" "$out" 0 \
+    FM_PAUSE_RESURFACE_SECS=999999 FM_STALE_ESCALATE_SECS=240 \
+    "FM_FAKE_CREW_STATE=state: paused · source: status-log · waiting on the captain")
+  [ "$result" = absorbed ] || fail "a declared external wait escalated as a wedge: $(cat "$out")"
+  [ ! -e "$state/.park-since-$key" ] || fail "a declared external wait kept a wedge escalation timer"
+  [ "$(stale_wake_count "$state" "$window")" -eq 0 ] \
+    || fail "a declared external wait queued a wedge wake"
+
+  pass "a delivered captain-relevant park escalates once when its run dies, while a declared wait never does"
+}
+
+# ONCE PER PARK SPELL, not once per watcher lifetime. This is the 2026-07-26
+# sixteen-hour outage reappearing inside its own fix: firstmate re-tasks a crew
+# behind an already-delivered terminal line, that run dies too, and the escalation
+# has to fire again. The release must therefore be evidence the spell ended - a
+# busy pane, or the crew's own new status event - never the pane tail holding
+# still, because a working agent's TUI churns its tail on every single poll and a
+# repeated-hash release never fires for the very crew this net exists to catch.
+test_two_park_spells_in_one_lifetime_each_escalate() {
+  local dir state fakebin out window key result spent
+
+  # Spell 1: a delivered needs-decision whose run has died. It escalates and latches.
+  dir=$(make_parked_case parked-two-spells-retask decision test:fm-decision \
+    'needs-decision: ship the fallback or wait for upstream?')
+  state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; window=test:fm-decision
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  freeze_parked_pane "$dir" "$window"
+  seed_park_timer "$state" decision "$window" 500
+  result=$(park_rearm "$state" "$fakebin" "$window" "$dir/pane.txt" "$out" 0 \
+    FM_PAUSE_RESURFACE_SECS=999999 FM_STALE_ESCALATE_SECS=240 \
+    "FM_FAKE_CREW_STATE=state: unknown · source: none · no current-state source available")
+  [ "$result" = woke ] || fail "park spell 1 never escalated: $(cat "$out")"
+  [ "$(cat "$state/.park-since-$key" 2>/dev/null || true)" = "$(fired_latch "$state" decision)" ] \
+    || fail "park spell 1 did not latch"
+
+  # Re-tasked. The crew writes no new status under the sparse contract, so the only
+  # trace is one busy pane, and it must release the latch.
+  result=$(park_rearm_busy "$state" "$fakebin" "$window" "$dir/pane.txt" "$out" 1 \
+    FM_PAUSE_RESURFACE_SECS=999999 FM_STALE_ESCALATE_SECS=240 \
+    "FM_FAKE_CREW_STATE=state: working · source: pane · harness busy")
+  [ "$result" = absorbed ] || fail "a re-tasked crew's busy pane woke firstmate: $(cat "$out")"
+  [ ! -e "$state/.park-since-$key" ] \
+    || fail "a busy pane did not release the escalation spent on the park spell that just ended"
+
+  # Spell 2: the re-tasked run dies behind that same unchanged needs-decision line.
+  # The pane settles back to idle, the park is re-established, and its timer restarts.
+  result=$(park_rearm "$state" "$fakebin" "$window" "$dir/pane.txt" "$out" 0 \
+    FM_PAUSE_RESURFACE_SECS=999999 FM_STALE_ESCALATE_SECS=240 \
+    "FM_FAKE_CREW_STATE=state: unknown · source: none · no current-state source available")
+  [ "$result" = absorbed ] || fail "the settling pane of park spell 2 woke early: $(cat "$out")"
+  result=$(park_rearm "$state" "$fakebin" "$window" "$dir/pane.txt" "$out" 0 \
+    FM_PAUSE_RESURFACE_SECS=999999 FM_STALE_ESCALATE_SECS=240 \
+    "FM_FAKE_CREW_STATE=state: unknown · source: none · no current-state source available")
+  [ "$result" = absorbed ] || fail "park spell 2 escalated before its own threshold: $(cat "$out")"
+  result=$(park_rearm "$state" "$fakebin" "$window" "$dir/pane.txt" "$out" 0 \
+    FM_PAUSE_RESURFACE_SECS=999999 FM_STALE_ESCALATE_SECS=240 \
+    "FM_FAKE_CREW_STATE=state: unknown · source: none · no current-state source available")
+  [ "$result" = absorbed ] || fail "park spell 2 escalated before its own threshold: $(cat "$out")"
+  [ -s "$state/.park-since-$key" ] || fail "park spell 2 never started its own escalation timer"
+
+  # Past the threshold on spell 2's own timer: it escalates again.
+  seed_park_timer "$state" decision "$window" 500
+  result=$(park_rearm "$state" "$fakebin" "$window" "$dir/pane.txt" "$out" 0 \
+    FM_PAUSE_RESURFACE_SECS=999999 FM_STALE_ESCALATE_SECS=240 \
+    "FM_FAKE_CREW_STATE=state: unknown · source: none · no current-state source available")
+  [ "$result" = woke ] || fail "park spell 2 never escalated - the latch is once per watcher lifetime: $(cat "$out")"
+  grep -F "possible wedge" "$out" >/dev/null || fail "park spell 2's escalation did not flag a possible wedge: $(cat "$out")"
+  [ "$(stale_wake_count "$state" "$window")" -eq 2 ] \
+    || fail "two park spells did not queue exactly one escalation each"
+
+  # The other release: a crew that DOES write a new delivered terminal status ends
+  # its spell that way, and the escalation spent on the previous spell must not
+  # silence the new one. The pane never stops being frozen here, so the status event
+  # is the only thing that changed.
+  dir=$(make_parked_case parked-two-spells-newstatus decision test:fm-decision \
+    'needs-decision: ship the fallback or wait for upstream?')
+  state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; window=test:fm-decision
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  freeze_parked_pane "$dir" "$window"
+  age_park_status "$state" decision 500
+  # Exactly what the watcher writes when the first spell spends its escalation.
+  spent=$(fired_latch "$state" decision)
+  printf '%s' "$spent" > "$state/.park-since-$key"
+  deliver_park_status "$state" decision 'done: fallback shipped, ready to validate'
+  # First poll of the new spell re-arms the timer rather than reusing the spent latch.
+  result=$(park_rearm "$state" "$fakebin" "$window" "$dir/pane.txt" "$out" 0 \
+    FM_PAUSE_RESURFACE_SECS=999999 FM_STALE_ESCALATE_SECS=240 \
+    "FM_FAKE_CREW_STATE=state: unknown · source: none · no current-state source available")
+  [ "$result" = absorbed ] || fail "a new park spell escalated on its first poll: $(cat "$out")"
+  [ "$(cat "$state/.park-since-$key" 2>/dev/null || true)" != "$spent" ] \
+    || fail "a new status event left the previous spell's spent latch in place"
+  park_timer_is_live "$state" decision "$window" \
+    || fail "the new park spell did not start its own live timer: $(cat "$state/.park-since-$key" 2>/dev/null || true)"
+  # And it escalates on the timer the WATCHER wrote, never on a seeded one: a latch
+  # that ignored the spell would still read `fired` here and stay silent forever.
+  result=$(park_rearm "$state" "$fakebin" "$window" "$dir/pane.txt" "$out" 0 \
+    FM_PAUSE_RESURFACE_SECS=999999 FM_STALE_ESCALATE_SECS=0 \
+    "FM_FAKE_CREW_STATE=state: unknown · source: none · no current-state source available")
+  [ "$result" = woke ] || fail "the park spell after a new status event never escalated: $(cat "$out")"
+  grep -F "already-delivered done" "$out" >/dev/null \
+    || fail "the new spell's escalation did not name its own delivered status: $(cat "$out")"
+  [ "$(stale_wake_count "$state" "$window")" -eq 1 ] \
+    || fail "the park spell after a new status event did not queue exactly one escalation"
+
+  pass "each park spell in one watcher lifetime gets its own escalation, released by a busy pane or a new status event"
+}
+
+# The provably-working override and the park handler share the repeat-hash chain,
+# and the override is checked first so an active run keeps its own wedge timer.
+# wedge_timer_check clears that timer when it escalates, which is what bounds the
+# override to one escalation per frozen hash and then hands the window to the park
+# handler. Keeping the override latched past its own timer - for instance by also
+# testing the escalation counter, which is not cleared on a byte-identical pane -
+# would re-enter the timer-repair path every window and turn this branch into the
+# unbounded wake loop the whole change exists to remove, while permanently
+# shadowing both of the park handler's nets.
+test_overridden_terminal_escalation_hands_off_to_the_park_handler() {
+  local dir state fakebin out window key result
+
+  # 'done' is the task id, quoted so it is read as a literal word rather than
+  # the shell keyword (SC1010).
+  dir=$(make_parked_case parked-override-handoff 'done' test:fm-done \
+    'done: implementation complete, ready to validate')
+  state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; window=test:fm-done
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  freeze_parked_pane "$dir" "$window"
+  # This frozen hash was already absorbed as provably-working, and its wedge
+  # timer is now past the escalation threshold.
+  printf '%s\n' $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  result=$(park_rearm "$state" "$fakebin" "$window" "$dir/pane.txt" "$out" 0 \
+    FM_PAUSE_RESURFACE_SECS=999999 FM_STALE_ESCALATE_SECS=240 \
+    "FM_FAKE_CREW_STATE=state: working · source: run-step · validating (running)")
+  [ "$result" = woke ] || fail "an overridden terminal stale past its wedge timer did not escalate: $(cat "$out")"
+  grep -F "possible wedge" "$out" >/dev/null || fail "the override escalation did not flag a possible wedge: $(cat "$out")"
+  [ ! -e "$state/.stale-since-$key" ] || fail "the override escalation kept its wedge timer"
+
+  # Same frozen pane, nothing changed. The override must NOT re-arm itself off the
+  # surviving escalation counter; the park handler takes the window from here.
+  result=$(park_rearm "$state" "$fakebin" "$window" "$dir/pane.txt" "$out" 0 \
+    FM_PAUSE_RESURFACE_SECS=999999 FM_STALE_ESCALATE_SECS=240 \
+    "FM_FAKE_CREW_STATE=state: working · source: run-step · validating (running)")
+  [ "$result" = absorbed ] || fail "the override escalation repeated on an unchanged frozen pane: $(cat "$out")"
+  [ "$(stale_wake_count "$state" "$window")" -eq 1 ] \
+    || fail "the override escalation queued more than one wake on an unchanged frozen pane"
+  [ -s "$state/.park-since-$key" ] \
+    || fail "the frozen pane never reached the park handler after its override escalation"
+
+  pass "an overridden terminal stale escalates once on a frozen pane, then hands the window to the park handler"
 }
 
 test_secondmate_paused_resurfaces_in_normal_mode() {
@@ -1291,6 +1771,13 @@ test_wedge_escalation_resets_when_pane_becomes_active
 test_nonterminal_stale_not_working_surfaced
 test_nonterminal_stale_paused_absorbed_then_resurfaced
 test_exited_declared_pause_is_bounded_but_live_gate_surfaces
+test_parked_pane_churn_does_not_hot_loop
+test_parked_pane_rechecks_once_per_window
+test_parked_gate_does_not_silence_real_wedges
+test_parked_static_pane_still_rechecks
+test_delivered_terminal_park_escalates_once_when_its_run_dies
+test_two_park_spells_in_one_lifetime_each_escalate
+test_overridden_terminal_escalation_hands_off_to_the_park_handler
 test_secondmate_paused_resurfaces_in_normal_mode
 test_secondmate_nonpaused_stale_remains_suppressed
 test_secondmate_unpause_clears_pause_tracking

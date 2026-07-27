@@ -6,9 +6,10 @@
 # is absorbed only when the crew shows POSITIVE evidence it is still working (an
 # actively-running no-mistakes step, or a backend busy signal), and surfaced
 # otherwise, so a crew that finishes (or stops and waits) without a current
-# working signal is never silently swallowed. A declared external-wait pause is
-# the separate idle absorb case and re-surfaces only on its long bounded cadence,
-# although its initial no-verb status signal still surfaces in normal mode.
+# working signal is never silently swallowed. A PARKED crew - one that declared
+# where it stopped and whose declaration firstmate already has - is the separate
+# idle absorb case and re-confirms only on its long bounded cadence, although the
+# declaring status signal itself still surfaces once in normal mode.
 # While state/.afk exists, the daemon owns triage and this watcher queues and exits
 # on every wake. Printed reason lines:
 #   signal: <file>...      status/turn-end signals, surfaced when a listed status
@@ -18,10 +19,16 @@
 #                          timer) regardless of what the status log says - an active
 #                          run-step or busy pane outranks even a captain-relevant log
 #                          line, since the crew's own log gets no new entry once
-#                          firstmate hands it to a no-mistakes validation. A declared
-#                          external-wait pause is absorbed instead with its own long
-#                          re-surface cadence, never as a wedge. Only when neither
-#                          absorb class applies does the log's last line decide:
+#                          firstmate hands it to a no-mistakes validation. A parked
+#                          crew is absorbed instead with its own long re-confirm
+#                          cadence, never as a repeating wedge, and that cadence
+#                          is anchored on the crew's status file so a re-rendering
+#                          idle pane cannot reset it. A park on an ALREADY-DELIVERED
+#                          captain-relevant status also escalates once, and only
+#                          once per park spell, past FM_STALE_ESCALATE_SECS, because
+#                          a crew re-tasked behind that unchanged line writes no new
+#                          status. Only when neither absorb class applies does the
+#                          log's last line decide:
 #                          terminal (captain-relevant) or non-terminal (no verb),
 #                          both surfaced at once. A provably-working stale past the
 #                          wedge threshold also surfaces, with an "escalation N"
@@ -281,35 +288,154 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
   esac
 }
 
+# The mtime of a crew's status file - when it last declared anything. Both park
+# nets read it only through here, so they share one read and one fallback: it both
+# times the bounded cadence and dates the current park spell. An unreadable file
+# falls back to now, which reads as a park that has only just begun, so each net
+# goes quiet for a window rather than acting on a value it could not confirm.
+park_status_mtime() {  # <task>
+  local m
+  m=$(stat_mtime "$STATE/$1.status")
+  case "$m" in ''|*[!0-9]*) m=$(date +%s) ;; esac
+  printf '%s' "$m"
+}
+
+# Single owner of the bounded re-confirm cadence for an EXPECTED idle pane, and
+# of the one throttle marker (.paused-resurfaced-<key>) every park handler shares,
+# so one crew gets one recheck per window no matter which handler observed it.
+# The age is anchored on the crew's own status file, never on a per-hash marker,
+# because an idle crew's pane keeps re-rendering (a ticking clock, a context
+# counter) and a hash-tied timer would reset on every re-render. Sets PARK_AGE to
+# the declared state's age for the caller's reason line. 0 when a recheck is due,
+# 1 while the declaration is still inside its window.
+PARK_AGE=0
+park_recheck_due() {  # <task> <throttle-file>
+  local task=$1 rf=$2
+  PARK_AGE=$(( $(date +%s) - $(park_status_mtime "$task") ))
+  [ "$PARK_AGE" -ge "$PAUSE_RESURFACE_SECS" ] || return 1
+  # 999999 when no prior re-surface, so a first recheck past the window is due.
+  [ "$(age_of "$rf")" -ge "$PAUSE_RESURFACE_SECS" ]
+}
+
 # Absorb a stale pane under a declared external-wait pause (paused:) or a
 # dead-agent captain-held transfer, and re-surface it once every
 # PAUSE_RESURFACE_SECS for a recheck so it cannot rot invisibly. Called on any
 # stale poll once pause_state_class permits the bounded cadence, so it must be
-# cheap: it NEVER re-reads crew state. The re-surface age is anchored on the
-# status file mtime, not a per-hash marker, so a churny idle pane (a ticking
-# clock, a token counter) cannot keep resetting the cadence the way a hash-tied
-# timer would. A .paused-resurfaced-<key> throttle marker records the last
-# re-surface epoch so, once past the window, it fires once per window rather than
-# every poll. Advances the stale suppressor to <hash> and flags the key paused.
+# cheap: it NEVER re-reads crew state. Advances the stale suppressor to <hash>
+# and flags the key paused.
 handle_paused_stale() {  # <window> <task> <hash>
-  local win=$1 task=$2 h=$3 key statusf mtime age rf rf_age reason
+  local win=$1 task=$2 h=$3 key reason
   key=$(printf '%s' "$win" | tr ':/.' '___')
   printf '%s' "$h" > "$STATE/.stale-$key"
   : > "$STATE/.paused-$key"
-  rm -f "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key"
-  statusf="$STATE/$task.status"
-  mtime=$(stat_mtime "$statusf")
-  case "$mtime" in ''|*[!0-9]*) mtime=$(date +%s) ;; esac
-  age=$(( $(date +%s) - mtime ))
-  rf="$STATE/.paused-resurfaced-$key"
-  rf_age=$(age_of "$rf")   # 999999 when no prior re-surface
-  if [ "$age" -ge "$PAUSE_RESURFACE_SECS" ] && [ "$rf_age" -ge "$PAUSE_RESURFACE_SECS" ]; then
-    reason="stale: $win (paused ${age}s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)"
+  rm -f "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key" "$STATE/.park-since-$key"
+  if park_recheck_due "$task" "$STATE/.paused-resurfaced-$key"; then
+    reason="stale: $win (paused ${PARK_AGE}s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)"
     fm_wake_append stale "$win" "$reason" || exit 1
-    date +%s > "$rf"
+    date +%s > "$STATE/.paused-resurfaced-$key"
     wake "$reason"
   fi
-  triage_log "absorbed stale (paused, awaiting external, age ${age}s): $win"
+  triage_log "absorbed stale (paused, awaiting external, age ${PARK_AGE}s): $win"
+}
+
+# 0 when a stale pane carries NO NEW INFORMATION because its crew is PARKED: it
+# has declared where it stopped, it is waiting on somebody else, and firstmate has
+# already been told. A declared pause or captain-held transfer is a park by
+# construction - the declaration itself is the "stop nagging this pane" signal. A
+# captain-relevant status (done, needs-decision, blocked, failed) is a park only
+# once it has actually been delivered, which the .hb-surfaced-<task> marker
+# records; an undelivered terminal status is still news and must surface at once.
+# A crew that merely went quiet with no declaration is never parked.
+crew_is_parked() {  # <task> <last-status-line>
+  local task=$1 last=$2
+  status_is_parked "$last" || return 1
+  status_is_paused_or_captain_held "$last" && return 0
+  [ "$(cat "$(_hb_surfaced_path "$task")" 2>/dev/null || true)" = "$last" ]
+}
+
+# Absorb the stale pane of a parked crew, and re-confirm the park on the bounded
+# cadence above. This is the fix for the 2026-07-20 hot loop: a parked crew's pane
+# keeps re-rendering, so every re-render is a NEW stale hash and therefore a fresh
+# first sight, and because the watcher exits on a wake, surfacing on first sight
+# repeats once per watcher cycle for as long as the crew stays parked. Reproduced
+# for both a `paused:` and a `needs-decision:` last status line. Advances the
+# stale suppressor, while the bounded recheck keeps a park that quietly wedges
+# from rotting invisibly. Called on EVERY stale poll of a park, first sight or
+# repeat, because a park whose pane stops re-rendering produces no further first
+# sight and would otherwise never reach its recheck at all. A captain-relevant
+# park additionally gets park_wedge_check's single bounded escalation. 0 when the
+# stale was handled here and the caller must NOT surface it; 1 when the crew is
+# not parked and normal surfacing applies.
+handle_parked_stale() {  # <window> <task> <hash>
+  local win=$1 task=$2 h=$3 key last verb reason
+  last=$(last_status_line "$STATE/$task.status")
+  crew_is_parked "$task" "$last" || return 1
+  key=$(printf '%s' "$win" | tr ':/.' '___')
+  verb=$(status_line_verb "$last")
+  printf '%s' "$h" > "$STATE/.stale-$key"
+  rm -f "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key"
+  if park_recheck_due "$task" "$STATE/.paused-resurfaced-$key"; then
+    reason="stale: $win (parked ${PARK_AGE}s on $verb, rechecked on a long cadence not a wedge; confirm the crew is still legitimately waiting)"
+    fm_wake_append stale "$win" "$reason" || exit 1
+    date +%s > "$STATE/.paused-resurfaced-$key"
+    wake "$reason"
+  fi
+  triage_log "absorbed stale (parked on $verb, age ${PARK_AGE}s): $win"
+  if status_is_paused_or_captain_held "$last"; then
+    # A declared wait names its own blocker, so the bounded recheck is the whole
+    # net for it. This is the recorded accepted trade-off, and it stays scoped to
+    # a declaration the crew actually wrote.
+    rm -f "$STATE/.park-since-$key"
+    return 0
+  fi
+  park_wedge_check "$win" "$task" "$key" "$verb"
+}
+
+# One-shot wedge escalation for a captain-relevant park. Unlike a declared wait,
+# a terminal park is only PRESUMED to be waiting on the captain: under the sparse
+# status contract a crew re-tasked after done/needs-decision/blocked/failed writes
+# no new line, so the identical park line also covers a re-tasked crew whose run
+# has since died. Without this the delivered-status absorb would hide that for a
+# whole PAUSE_RESURFACE_SECS window. Fires at most ONCE per park spell, latched by
+# writing "fired" into its own timer file: pre-fix such a pane surfaced once and
+# then went quiet, and a repeating drumbeat would recreate the hot loop for a crew
+# that is legitimately done and waiting on the captain. The timer lives in
+# .park-since-<key> rather than the shared .stale-since-<key> for two reasons: it
+# can never take over (or be taken over by) the uncapped provably-working wedge
+# timer for the same window, and it can survive the hash change a re-rendering
+# parked pane produces on almost every poll, which would otherwise restart it
+# forever.
+#
+# ONCE PER PARK SPELL, not once per watcher lifetime: the marker records which
+# spell it belongs to, as the status file mtime that park_recheck_due already
+# anchors the cadence on. A crew's own status event is the durable record that the
+# previous spell ended, so a marker naming an older spell describes a park that is
+# over and can never bound the current one. That covers the re-task that writes a
+# new status; a re-task behind an UNCHANGED line writes nothing, so the busy pane
+# it produces releases the marker in the stale loop (see $pkf there). The tail
+# holding still is deliberately NOT the release signal: a working agent TUI churns
+# its tail every poll, so a repeated-hash release never fires for the very crew
+# this escalation exists to catch. A running pipeline, a surfaced stale, and
+# clear_pause_tracking release it too.
+park_wedge_check() {  # <window> <task> <key> <verb>
+  local win=$1 task=$2 key=$3 verb=$4 f spell rec since age reason
+  f="$STATE/.park-since-$key"
+  spell=$(park_status_mtime "$task")
+  rec=$(cat "$f" 2>/dev/null || true)
+  case "$rec" in
+    "$spell "*) since=${rec#* } ;;
+    *) printf '%s %s' "$spell" "$(date +%s)" > "$f"; return 0 ;;
+  esac
+  case "$since" in
+    fired) return 0 ;;
+    ''|*[!0-9]*) printf '%s %s' "$spell" "$(date +%s)" > "$f"; return 0 ;;
+  esac
+  age=$(( $(date +%s) - since ))
+  [ "$age" -ge "$STALE_ESCALATE_SECS" ] || return 0
+  reason="stale: $win (idle ${age}s behind an already-delivered $verb, possible wedge - the crew may have been re-tasked and stopped since; peek before re-absorbing)"
+  fm_wake_append stale "$win" "$reason" || exit 1
+  printf '%s fired' "$spell" > "$f"
+  wake "$reason"
 }
 
 clear_pause_state() {  # <window>
@@ -326,7 +452,8 @@ clear_pause_tracking() {  # <window>
   key=${key//\//_}
   key=${key//./_}
   clear_pause_state "$win"
-  rm -f "$STATE/.stale-$key" "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key"
+  rm -f "$STATE/.stale-$key" "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key" \
+    "$STATE/.park-since-$key"
 }
 
 # Reconcile a declared pause or captain-held status with authoritative crew state.
@@ -383,7 +510,7 @@ surface_nonterminal_stale() {  # <window> <hash>
   key=$(printf '%s' "$win" | tr ':/.' '___')
   fm_wake_append stale "$win" "stale: $win" || exit 1
   printf '%s' "$h" > "$STATE/.stale-$key"
-  rm -f "$STATE/.stale-since-$key"
+  rm -f "$STATE/.stale-since-$key" "$STATE/.park-since-$key"
   task=$(window_to_task "$win" "$STATE")
   last=$(last_status_line "$STATE/$task.status")
   if status_is_paused_or_captain_held "$last"; then
@@ -849,6 +976,7 @@ EOF
     sf="$STATE/.stale-$key"
     ssf="$STATE/.stale-since-$key"
     ewf="$STATE/.wedge-escalations-$key"
+    pkf="$STATE/.park-since-$key"   # one-shot escalation timer for a captain-relevant park
     pf="$STATE/.paused-$key"   # flag: this key's stale is using the bounded pause cadence
     prev=$(cat "$hf" 2>/dev/null || true)
     if [ "$h" = "$prev" ]; then
@@ -892,11 +1020,23 @@ EOF
             if crew_is_provably_working "$(window_to_task "$w" "$STATE")"; then
               printf '%s' "$h" > "$sf"
               date +%s > "$ssf"
+              # A running pipeline is proof the crew was re-tasked behind this
+              # terminal line, so any park escalation already spent for the
+              # previous idle spell is released for the next one.
+              rm -f "$pkf"
               triage_log "absorbed stale (provably working, overriding a stale captain-relevant status): $w"
+            elif handle_parked_stale "$w" "$task" "$h"; then
+              # The crew is parked on a captain-relevant status firstmate has
+              # already been shown, so this pane going stale is the expected
+              # steady state. Checked AFTER the provably-working override so an
+              # active run behind a stale terminal line still keeps its wedge
+              # timer, and only for an ALREADY-SURFACED status so an undelivered
+              # done/needs-decision/blocked/failed still surfaces below.
+              :
             else
               fm_wake_append stale "$w" "stale: $w" || exit 1
               printf '%s' "$h" > "$sf"
-              rm -f "$ssf"
+              rm -f "$ssf" "$pkf"
               mark_surfaced "$STATE/$(window_to_task "$w" "$STATE").status"
               wake "stale: $w"
             fi
@@ -905,7 +1045,19 @@ EOF
             # wedge timer is running for it) - keep treating it that way
             # without re-reading the crew state every poll, and without
             # letting the still-captain-relevant log line re-surface it.
+            # Checked before the park handler so an active run behind a stale
+            # terminal line keeps its own wedge timer. wedge_timer_check clears
+            # the timer when it escalates, so a frozen pane leaves this branch
+            # after one escalation and falls through to the park handler below.
             wedge_timer_check "$w" "$ssf" "stale (overridden terminal status)" "$ewf"
+          elif handle_parked_stale "$w" "$task" "$h"; then
+            # Repeat poll of a park's own hash. A parked pane that STOPS
+            # re-rendering never produces another first sight, so without this
+            # the bounded recheck could never fire and the park would be
+            # absorbed silently forever. The park handler owns both nets here:
+            # the long-cadence recheck, and its own one-shot escalation for a
+            # crew re-tasked behind an unchanged terminal line whose run died.
+            :
           fi
           # else: already surfaced as genuinely terminal on a prior poll of
           # this same hash - nothing left to do (matches the original,
@@ -920,11 +1072,12 @@ EOF
           #   - paused: the crew declared an external wait, or a declared pause or
           #     captain hold is paired with a confidently dead agent, so absorb on
           #     the long PAUSE_RESURFACE_SECS cadence instead of wedge-escalating;
-          #   - none: no running pipeline, idle pane, no busy signature, no declared
-          #     pause - the crew has STOPPED. Surface immediately so firstmate peeks
-          #     (it may be done via an interactive menu that wrote no done: status,
-          #     waiting on a decision, or wedged) instead of leaving the finish to
-          #     wait out the timer.
+          #   - none: no running pipeline, idle pane, no busy signature, or a
+          #     declaration whose agent is not confidently dead. A parked crew keeps
+          #     its bounded cadence (see below); otherwise the crew has STOPPED and
+          #     is surfaced immediately so firstmate peeks (it may be done via an
+          #     interactive menu that wrote no done: status, waiting on a decision,
+          #     or wedged) instead of leaving the finish to wait out the timer.
           if [ "$(cat "$sf" 2>/dev/null || true)" != "$h" ]; then
             task=$(window_to_task "$w" "$STATE")
             case "$(pause_state_class "$w" "$task")" in
@@ -938,7 +1091,11 @@ EOF
                 handle_paused_stale "$w" "$task" "$h"
                 ;;
               *)
-                surface_nonterminal_stale "$w" "$h"
+                # A declared pause or captain-held transfer whose agent is not
+                # confidently dead lands here. It is still a park: the crew said
+                # it is waiting, so its re-rendering pane must be re-confirmed on
+                # the bounded cadence rather than surfaced on every new hash.
+                handle_parked_stale "$w" "$task" "$h" || surface_nonterminal_stale "$w" "$h"
                 ;;
             esac
           else
@@ -959,7 +1116,16 @@ EOF
         fi
       else
         # Pane busy or not yet stably stale: reset pending escalation bookkeeping.
+        # A BUSY pane is real evidence the crew resumed - the one pane-derived
+        # signal that may clear a park's escalation marker, so the next park spell
+        # gets its own escalation. A bare hash change must not. n >= 2 here means
+        # this branch was taken because the pane is busy, so the busy state is
+        # already known; below that the question has to be asked, and only for a
+        # window that actually carries a park marker.
         rm -f "$ssf" "$ewf"
+        if [ -e "$pkf" ] && { [ "$n" -ge 2 ] || window_is_busy "$w" "$tail40"; }; then
+          rm -f "$pkf"
+        fi
         if [ -e "$pf" ] && { [ "$n" -ge 2 ] || ! status_is_paused_or_captain_held "$(last_status_line "$STATE/$(window_to_task "$w" "$STATE").status")"; }; then
           clear_pause_tracking "$w"
         fi
@@ -967,12 +1133,29 @@ EOF
     else
       printf '%s' "$h" > "$hf"
       echo 0 > "$cf"
+      # $pkf deliberately survives a bare hash change: a parked pane re-renders,
+      # and resetting the park's escalation timer here would restart it on every
+      # re-render, turning a slow-churning park back into a repeating wake. A BUSY
+      # pane is different - that is the crew working again, which ends the park
+      # spell the marker was spent on, and it is the only release a crew re-tasked
+      # behind an unchanged terminal line ever produces. Asked only when the marker
+      # exists, since a re-tasked agent's churning tail lands here every poll.
       rm -f "$ssf" "$ewf"
+      if [ -e "$pkf" ] && window_is_busy "$w" "$tail40"; then
+        rm -f "$pkf"
+      fi
       task=$(window_to_task "$w" "$STATE")
       if ! afk_present && status_is_paused_or_captain_held "$(last_status_line "$STATE/$task.status")" && ! window_is_busy "$w" "$tail40"; then
         case "$(pause_state_class "$w" "$task")" in
-          paused) handle_paused_stale "$w" "$task" "$h" ;;
-          *)      clear_pause_tracking "$w" ;;
+          paused)  handle_paused_stale "$w" "$task" "$h" ;;
+          working) clear_pause_tracking "$w" ;;
+          # `none` here means the declaration still stands but the agent is not
+          # confidently dead - a live crew parked on its own declared wait. Its
+          # pane re-rendering is not evidence it resumed, so keep the park
+          # bookkeeping: clearing it here reset the bounded recheck marker on
+          # every re-render and made each new hash a fresh first sight, which is
+          # what sustained the hot loop.
+          *)       : ;;
         esac
       else
         [ -e "$pf" ] && clear_pause_tracking "$w"
