@@ -288,6 +288,16 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
   esac
 }
 
+# The mtime of a crew's status file, 0 when it cannot be read. Both park nets are
+# anchored on it: it is when the crew last declared anything, so it dates the
+# current park spell as well as timing its cadence.
+park_status_mtime() {  # <task>
+  local m
+  m=$(stat_mtime "$STATE/$1.status")
+  case "$m" in ''|*[!0-9]*) m=0 ;; esac
+  printf '%s' "$m"
+}
+
 # Single owner of the bounded re-confirm cadence for an EXPECTED idle pane, and
 # of the one throttle marker (.paused-resurfaced-<key>) every park handler shares,
 # so one crew gets one recheck per window no matter which handler observed it.
@@ -379,7 +389,7 @@ handle_parked_stale() {  # <window> <task> <hash>
     rm -f "$STATE/.park-since-$key"
     return 0
   fi
-  park_wedge_check "$win" "$key" "$verb"
+  park_wedge_check "$win" "$task" "$key" "$verb"
 }
 
 # One-shot wedge escalation for a captain-relevant park. Unlike a declared wait,
@@ -395,21 +405,37 @@ handle_parked_stale() {  # <window> <task> <hash>
 # can never take over (or be taken over by) the uncapped provably-working wedge
 # timer for the same window, and it can survive the hash change a re-rendering
 # parked pane produces on almost every poll, which would otherwise restart it
-# forever. Only real evidence the crew resumed clears it - a busy pane, a running
-# pipeline, a surfaced stale, or clear_pause_tracking.
-park_wedge_check() {  # <window> <key> <verb>
-  local win=$1 key=$2 verb=$3 f since age reason
+# forever.
+#
+# ONCE PER PARK SPELL, not once per watcher lifetime: the marker records which
+# spell it belongs to, as the status file mtime that park_recheck_due already
+# anchors the cadence on. A crew's own status event is the durable record that the
+# previous spell ended, so a marker naming an older spell describes a park that is
+# over and can never bound the current one. That covers the re-task that writes a
+# new status; a re-task behind an UNCHANGED line writes nothing, so the busy pane
+# it produces releases the marker in the stale loop (see $pkf there). The tail
+# holding still is deliberately NOT the release signal: a working agent TUI churns
+# its tail every poll, so a repeated-hash release never fires for the very crew
+# this escalation exists to catch. A running pipeline, a surfaced stale, and
+# clear_pause_tracking release it too.
+park_wedge_check() {  # <window> <task> <key> <verb>
+  local win=$1 task=$2 key=$3 verb=$4 f spell rec since age reason
   f="$STATE/.park-since-$key"
-  since=$(cat "$f" 2>/dev/null || true)
+  spell=$(park_status_mtime "$task")
+  rec=$(cat "$f" 2>/dev/null || true)
+  case "$rec" in
+    "$spell "*) since=${rec#* } ;;
+    *) printf '%s %s' "$spell" "$(date +%s)" > "$f"; return 0 ;;
+  esac
   case "$since" in
     fired) return 0 ;;
-    ''|*[!0-9]*) date +%s > "$f"; return 0 ;;
+    ''|*[!0-9]*) printf '%s %s' "$spell" "$(date +%s)" > "$f"; return 0 ;;
   esac
   age=$(( $(date +%s) - since ))
   [ "$age" -ge "$STALE_ESCALATE_SECS" ] || return 0
   reason="stale: $win (idle ${age}s behind an already-delivered $verb, possible wedge - the crew may have been re-tasked and stopped since; peek before re-absorbing)"
   fm_wake_append stale "$win" "$reason" || exit 1
-  printf 'fired' > "$f"
+  printf '%s fired' "$spell" > "$f"
   wake "$reason"
 }
 
@@ -1091,11 +1117,16 @@ EOF
         fi
       else
         # Pane busy or not yet stably stale: reset pending escalation bookkeeping.
-        # n >= 2 here means the branch was taken because the pane is BUSY, which
-        # is real evidence the crew resumed - the one pane-derived signal that may
-        # clear a park's escalation latch. A bare hash change must not.
+        # A BUSY pane is real evidence the crew resumed - the one pane-derived
+        # signal that may clear a park's escalation marker, so the next park spell
+        # gets its own escalation. A bare hash change must not. n >= 2 here means
+        # this branch was taken because the pane is busy, so the busy state is
+        # already known; below that the question has to be asked, and only for a
+        # window that actually carries a park marker.
         rm -f "$ssf" "$ewf"
-        [ "$n" -ge 2 ] && rm -f "$pkf"
+        if [ -e "$pkf" ] && { [ "$n" -ge 2 ] || window_is_busy "$w" "$tail40"; }; then
+          rm -f "$pkf"
+        fi
         if [ -e "$pf" ] && { [ "$n" -ge 2 ] || ! status_is_paused_or_captain_held "$(last_status_line "$STATE/$(window_to_task "$w" "$STATE").status")"; }; then
           clear_pause_tracking "$w"
         fi
@@ -1103,10 +1134,17 @@ EOF
     else
       printf '%s' "$h" > "$hf"
       echo 0 > "$cf"
-      # $pkf deliberately survives a hash change: a parked pane re-renders, and
-      # resetting the park's escalation timer here would restart it on every
-      # re-render, turning a slow-churning park back into a repeating wake.
+      # $pkf deliberately survives a bare hash change: a parked pane re-renders,
+      # and resetting the park's escalation timer here would restart it on every
+      # re-render, turning a slow-churning park back into a repeating wake. A BUSY
+      # pane is different - that is the crew working again, which ends the park
+      # spell the marker was spent on, and it is the only release a crew re-tasked
+      # behind an unchanged terminal line ever produces. Asked only when the marker
+      # exists, since a re-tasked agent's churning tail lands here every poll.
       rm -f "$ssf" "$ewf"
+      if [ -e "$pkf" ] && window_is_busy "$w" "$tail40"; then
+        rm -f "$pkf"
+      fi
       task=$(window_to_task "$w" "$STATE")
       if ! afk_present && status_is_paused_or_captain_held "$(last_status_line "$STATE/$task.status")" && ! window_is_busy "$w" "$tail40"; then
         case "$(pause_state_class "$w" "$task")" in
