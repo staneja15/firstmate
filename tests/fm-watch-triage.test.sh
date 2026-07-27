@@ -1051,7 +1051,9 @@ test_delivered_terminal_park_escalates_once_when_its_run_dies() {
 test_overridden_terminal_escalation_hands_off_to_the_park_handler() {
   local dir state fakebin out window key result
 
-  dir=$(make_parked_case parked-override-handoff done test:fm-done \
+  # 'done' is the task id, quoted so it is read as a literal word rather than
+  # the shell keyword (SC1010).
+  dir=$(make_parked_case parked-override-handoff 'done' test:fm-done \
     'done: implementation complete, ready to validate')
   state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; window=test:fm-done
   key=$(printf '%s' "$window" | tr ':/.' '___')
