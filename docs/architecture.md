@@ -27,7 +27,9 @@ It fires at most once per park spell, so it cannot become a repeating wake, and 
 The pane tail holding still is deliberately not one of those signals, since a working agent's TUI churns its tail on every poll and a re-tasked crew behind an unchanged terminal line writes no new status, which is exactly the case the escalation exists to catch.
 A declared `paused:` or `captain-held` wait names its own blocker and keeps the recheck as its only cadence.
 The secondmate idle-endpoint exemption is unchanged.
-A park's own declaring status write still surfaces once through the normal-mode no-verb signal path, so the first mate learns of the park without the stale path repeating it, while away mode self-handles that routine signal and owns the later recheck.
+A park's own declaring status write still surfaces once through the normal-mode signal path, so the first mate learns of the park without the stale path repeating it.
+Which half of that path carries it depends on the declaration: a `done:`, `needs-decision:`, `blocked:`, or `failed:` line is captain-relevant and surfaces on that test, while a `paused:` or `captain-held` line carries no captain-relevant verb and surfaces on the no-verb test because its crew is not provably working.
+Away mode self-handles the declared-wait signal and owns its later recheck, and escalates a captain-relevant declaration as usual.
 Fresh stale panes use the same current-state read before trusting the status log, so an active run or busy pane outranks an old captain-relevant status-log line left behind before validation.
 No-change heartbeats are also benign.
 Absorbed wakes advance their suppression markers, log to `state/.watch-triage.log`, and keep the watcher blocking without a queue record or LLM turn.
