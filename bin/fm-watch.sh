@@ -288,13 +288,15 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
   esac
 }
 
-# The mtime of a crew's status file, 0 when it cannot be read. Both park nets are
-# anchored on it: it is when the crew last declared anything, so it dates the
-# current park spell as well as timing its cadence.
+# The mtime of a crew's status file - when it last declared anything. Both park
+# nets read it only through here, so they share one read and one fallback: it both
+# times the bounded cadence and dates the current park spell. An unreadable file
+# falls back to now, which reads as a park that has only just begun, so each net
+# goes quiet for a window rather than acting on a value it could not confirm.
 park_status_mtime() {  # <task>
   local m
   m=$(stat_mtime "$STATE/$1.status")
-  case "$m" in ''|*[!0-9]*) m=0 ;; esac
+  case "$m" in ''|*[!0-9]*) m=$(date +%s) ;; esac
   printf '%s' "$m"
 }
 
@@ -308,11 +310,8 @@ park_status_mtime() {  # <task>
 # 1 while the declaration is still inside its window.
 PARK_AGE=0
 park_recheck_due() {  # <task> <throttle-file>
-  local task=$1 rf=$2 statusf mtime
-  statusf="$STATE/$task.status"
-  mtime=$(stat_mtime "$statusf")
-  case "$mtime" in ''|*[!0-9]*) mtime=$(date +%s) ;; esac
-  PARK_AGE=$(( $(date +%s) - mtime ))
+  local task=$1 rf=$2
+  PARK_AGE=$(( $(date +%s) - $(park_status_mtime "$task") ))
   [ "$PARK_AGE" -ge "$PAUSE_RESURFACE_SECS" ] || return 1
   # 999999 when no prior re-surface, so a first recheck past the window is due.
   [ "$(age_of "$rf")" -ge "$PAUSE_RESURFACE_SECS" ]

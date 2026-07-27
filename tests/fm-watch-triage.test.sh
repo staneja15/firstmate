@@ -833,6 +833,20 @@ fired_latch() {  # <state> <task>
   printf '%s fired' "$(file_mtime "$1/$2.status")"
 }
 
+# 0 when the marker holds a LIVE escalation timer for <task>'s CURRENT park spell -
+# an unspent timer the watcher itself started, rather than a latch spent on an
+# earlier spell.
+park_timer_is_live() {  # <state> <task> <window>
+  local state=$1 task=$2 key rec spell
+  key=$(printf '%s' "$3" | tr ':/.' '___')
+  rec=$(cat "$state/.park-since-$key" 2>/dev/null || true)
+  spell=$(file_mtime "$state/$task.status")
+  case "$rec" in
+    "$spell "[0-9]*) return 0 ;;
+  esac
+  return 1
+}
+
 stale_wake_count() {  # <state> <window>
   [ -e "$1/.wake-queue" ] || { printf '0'; return; }
   awk -F '\t' -v w="$2" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' "$1/.wake-queue"
@@ -1088,7 +1102,7 @@ test_delivered_terminal_park_escalates_once_when_its_run_dies() {
 # still, because a working agent's TUI churns its tail on every single poll and a
 # repeated-hash release never fires for the very crew this net exists to catch.
 test_two_park_spells_in_one_lifetime_each_escalate() {
-  local dir state fakebin out window key result
+  local dir state fakebin out window key result spent
 
   # Spell 1: a delivered needs-decision whose run has died. It escalates and latches.
   dir=$(make_parked_case parked-two-spells-retask decision test:fm-decision \
@@ -1149,22 +1163,29 @@ test_two_park_spells_in_one_lifetime_each_escalate() {
   key=$(printf '%s' "$window" | tr ':/.' '___')
   freeze_parked_pane "$dir" "$window"
   age_park_status "$state" decision 500
-  printf '%s %s' "$(file_mtime "$state/decision.status")" fired > "$state/.park-since-$key"
+  # Exactly what the watcher writes when the first spell spends its escalation.
+  spent=$(fired_latch "$state" decision)
+  printf '%s' "$spent" > "$state/.park-since-$key"
   deliver_park_status "$state" decision 'done: fallback shipped, ready to validate'
   # First poll of the new spell re-arms the timer rather than reusing the spent latch.
   result=$(park_rearm "$state" "$fakebin" "$window" "$dir/pane.txt" "$out" 0 \
     FM_PAUSE_RESURFACE_SECS=999999 FM_STALE_ESCALATE_SECS=240 \
     "FM_FAKE_CREW_STATE=state: unknown · source: none · no current-state source available")
   [ "$result" = absorbed ] || fail "a new park spell escalated on its first poll: $(cat "$out")"
-  [ "$(cat "$state/.park-since-$key" 2>/dev/null || true)" = "$(fired_latch "$state" decision)" ] \
-    && fail "a new status event left the previous spell's spent latch in place"
-  seed_park_timer "$state" decision "$window" 500
+  [ "$(cat "$state/.park-since-$key" 2>/dev/null || true)" != "$spent" ] \
+    || fail "a new status event left the previous spell's spent latch in place"
+  park_timer_is_live "$state" decision "$window" \
+    || fail "the new park spell did not start its own live timer: $(cat "$state/.park-since-$key" 2>/dev/null || true)"
+  # And it escalates on the timer the WATCHER wrote, never on a seeded one: a latch
+  # that ignored the spell would still read `fired` here and stay silent forever.
   result=$(park_rearm "$state" "$fakebin" "$window" "$dir/pane.txt" "$out" 0 \
-    FM_PAUSE_RESURFACE_SECS=999999 FM_STALE_ESCALATE_SECS=240 \
+    FM_PAUSE_RESURFACE_SECS=999999 FM_STALE_ESCALATE_SECS=0 \
     "FM_FAKE_CREW_STATE=state: unknown · source: none · no current-state source available")
   [ "$result" = woke ] || fail "the park spell after a new status event never escalated: $(cat "$out")"
   grep -F "already-delivered done" "$out" >/dev/null \
     || fail "the new spell's escalation did not name its own delivered status: $(cat "$out")"
+  [ "$(stale_wake_count "$state" "$window")" -eq 1 ] \
+    || fail "the park spell after a new status event did not queue exactly one escalation"
 
   pass "each park spell in one watcher lifetime gets its own escalation, released by a busy pane or a new status event"
 }
