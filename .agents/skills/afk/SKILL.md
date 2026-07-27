@@ -149,7 +149,9 @@ The daemon wraps `fm-watch.sh`, runs the watcher as a child, classifies each
 wake reason in bash, and self-handles the routine majority without consuming a
 firstmate turn.
 Captain-relevant events, plus a bounded recheck of a declared external wait that remains idle, escalate to firstmate's context as one pre-read, single-line, batched digest.
-The classification predicates (the captain-relevant verb set, declared-pause vocabulary, signal/stale tests, and fleet-scan) live in the shared `bin/fm-classify-lib.sh`, the same library the always-on watcher uses for its own triage when afk is off, so the two modes apply one identical policy.
+The status vocabulary and classification predicates (the captain-relevant verb set, declared-pause and park vocabulary, signal/stale tests, and fleet-scan) live in the shared `bin/fm-classify-lib.sh`, the same library the always-on watcher uses for its own triage when afk is off, so both modes read a status line the same way.
+Their triage outcomes diverge in one deliberate place: park handling lives in `bin/fm-watch.sh` only, so normal mode absorbs an idle pane behind an already-delivered captain-relevant status while away mode still escalates it.
+`docs/architecture.md` "Event-driven supervision" owns what counts as a park and its cadence.
 While `state/.afk` exists the daemon owns the watcher, so the watcher reverts to one-shot and lets the daemon do the triage - the two never run their triage at the same time.
 
 Classify each wake this way:
