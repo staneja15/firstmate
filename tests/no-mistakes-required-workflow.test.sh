@@ -45,6 +45,22 @@ test_signature_sequence_at_fixed_head() {
   pass "fixed-head signed opened, unsigned edited, signed edited yields 0/1/0"
 }
 
+test_signature_survives_body_rewrites() {
+  local trimmed
+  trimmed='## Intent\n\nShort relayed description.\n\n## What changed\n\n- One bullet.'
+  if signature_result "$trimmed"; then
+    fail "a rewritten body that dropped the pipeline section must fail"
+  fi
+  signature_result "$trimmed\n\n## Pipeline\n\n$MARKER" || \
+    fail "a rewritten body that kept the pipeline section must succeed"
+
+  assert_grep 'keeps the no-mistakes `## Pipeline` signature section verbatim' "$ROOT/AGENTS.md" \
+    "AGENTS.md does not require PR body rewrites to keep the pipeline signature"
+  assert_grep 'any later edit must keep the `## Pipeline` section no-mistakes wrote' "$ROOT/CONTRIBUTING.md" \
+    "CONTRIBUTING.md does not require PR body edits to keep the pipeline signature"
+  pass "body rewrites must carry the pipeline signature, and both instruction surfaces say so"
+}
+
 test_event_identity_contract() {
   local opened edited_one edited_two synchronize reopened
   opened=$(render_group opened 9001)
@@ -91,6 +107,7 @@ test_security_and_signature_contract_is_preserved() {
 }
 
 test_signature_sequence_at_fixed_head
+test_signature_survives_body_rewrites
 test_event_identity_contract
 test_run_names_are_ordered_and_unique
 test_security_and_signature_contract_is_preserved
