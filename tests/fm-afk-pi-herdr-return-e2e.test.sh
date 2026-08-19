@@ -114,7 +114,9 @@ cat > "$TMP_ROOT/daemon-entry" <<EOF
 #!/usr/bin/env bash
 export PATH='$FAKEBIN:$ORIGINAL_PATH'
 export HERDR_SESSION='$SESSION'
+export FM_HOME='$HOME_DIR'
 export FM_STATE_OVERRIDE='$STATE'
+export FM_CONFIG_OVERRIDE='$HOME_DIR/config'
 export FM_ESCALATE_BATCH_SECS=0
 export FM_HOUSEKEEPING_TICK=1
 export FM_POLL=1

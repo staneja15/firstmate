@@ -174,22 +174,48 @@ test_blank_padded_real_text_is_still_pending() {
 
 test_normalize_blanks_leaves_visible_text_alone() {
   local out
-  out='plain ascii text'
-  fm_composer_normalize_blanks out
+  out=$(fm_composer_normalize_blanks 'plain ascii text')
   [ "$out" = 'plain ascii text' ] || fail "normalization altered plain ASCII: '$out'"
   # A multibyte glyph that is NOT a blank must survive byte-for-byte.
-  out=$(printf '\xe2\x9d\xaf')
-  fm_composer_normalize_blanks out
+  out=$(fm_composer_normalize_blanks "$(printf '\xe2\x9d\xaf')")
   [ "$out" = "$(printf '\xe2\x9d\xaf')" ] || fail "normalization damaged the '❯' glyph"
-  out=$(printf 'caf\xc3\xa9 \xe6\x97\xa5\xe6\x9c\xac')
-  fm_composer_normalize_blanks out
+  out=$(fm_composer_normalize_blanks "$(printf 'caf\xc3\xa9 \xe6\x97\xa5\xe6\x9c\xac')")
   [ "$out" = "$(printf 'caf\xc3\xa9 \xe6\x97\xa5\xe6\x9c\xac')" ] \
     || fail "normalization damaged accented or CJK text: '$out'"
   # Interior blanks are normalized without collapsing the text around them.
-  out=$(printf 'ship\xc2\xa0it')
-  fm_composer_normalize_blanks out
+  out=$(fm_composer_normalize_blanks "$(printf 'ship\xc2\xa0it')")
   [ "$out" = 'ship it' ] || fail "an interior blank was not normalized to a space: '$out'"
   pass "fm_composer_normalize_blanks: visible text, including multibyte, is untouched"
+}
+
+# The helper takes the text itself and returns the normalized string. It must
+# never write in the caller's scope: a form that assigned through a
+# caller-supplied variable NAME did nothing at all when that name happened to
+# match one of the function's own locals, which would classify a padded row on
+# un-normalized content - the exact wedge this owner exists to prevent - and do
+# it silently.
+test_normalize_blanks_writes_nothing_in_the_caller_scope() {
+  local out padded expected v
+  padded=$(printf '\xe2\x9d\xaf\xc2\xa0')
+  expected=$(printf '\xe2\x9d\xaf')
+  for v in text blank name out padded expected; do
+    # shellcheck disable=SC2016
+    bash -c '
+      set -eu
+      . "$1"
+      eval "$2=sentinel-before"
+      got=$(fm_composer_normalize_blanks "$3")
+      [ "$got" = "$4" ] || { printf "normalized=%s\n" "$got"; exit 2; }
+      eval "seen=\$$2"
+      [ "$seen" = sentinel-before ] || { printf "clobbered=%s\n" "$seen"; exit 3; }
+    ' _ "$ROOT/bin/fm-composer-lib.sh" "$v" "$padded" "$expected" \
+      || fail "fm_composer_normalize_blanks misbehaved for a caller variable named '$v'"
+  done
+  # And the verdict itself still normalizes when the caller's own locals carry
+  # the names the helper uses internally.
+  out=$(text=$padded blank=$padded name=$padded classify 0 "$padded")
+  [ "$out" = empty ] || fail "classification broke under colliding caller variable names, got '$out'"
+  pass "fm_composer_normalize_blanks: returns the normalized string and writes no caller variable"
 }
 
 # --- Real text is pending ---------------------------------------------------
@@ -216,3 +242,4 @@ test_nbsp_padded_agent_glyph_is_empty
 test_nbsp_padded_shell_glyph_keeps_its_safety_verdict
 test_blank_padded_real_text_is_still_pending
 test_normalize_blanks_leaves_visible_text_alone
+test_normalize_blanks_writes_nothing_in_the_caller_scope

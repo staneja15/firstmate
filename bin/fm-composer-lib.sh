@@ -219,21 +219,21 @@ FM_COMPOSER_BLANK_CHARS=(
 )
 
 # fm_composer_normalize_blanks: map every Unicode blank above onto an ordinary
-# ASCII space in the NAMED variable, then trim the ASCII whitespace that
-# normalization just exposed, in place. Byte-literal ($'\xNN') so it is
-# locale-independent, and pure parameter expansion read back through the named
-# variable so no subshell or external process runs per candidate row - this is
-# the single normalize-then-trim rule, applied to every argument the verdict
-# inspects. Indirect read plus `printf -v` rather than a nameref, so this stays
-# runnable on stock macOS Bash 3.2 like the rest of the shared libraries.
-fm_composer_normalize_blanks() {  # <var-name>
-  local name=$1 text=${!1} blank
+# ASCII space, then trim the ASCII whitespace that normalization just exposed,
+# and print the result - the single normalize-then-trim rule, applied to every
+# argument the verdict inspects. Byte-literal ($'\xNN') so it is
+# locale-independent, and pure parameter expansion so no external process runs
+# per candidate row. String in, string out: it takes the text itself, never a
+# variable name, and writes nothing in the caller's scope, so no caller can be
+# silently skipped by a name that collides with this function's own locals.
+fm_composer_normalize_blanks() {  # <text>
+  local text=$1 blank
   for blank in "${FM_COMPOSER_BLANK_CHARS[@]}"; do
     text=${text//"$blank"/ }
   done
   text="${text#"${text%%[![:space:]]*}"}"
   text="${text%"${text##*[![:space:]]}"}"
-  printf -v "$name" '%s' "$text"
+  printf '%s' "$text"
 }
 
 # fm_composer_classify_content: the single shared composer-content verdict.
@@ -262,8 +262,8 @@ fm_composer_classify_content() {  # <bordered> <content> [idle_re] [idle_case] [
   # Normalize invisible composer padding FIRST, before any emptiness test, so a
   # blank POSIX [[:space:]] does not match cannot survive as "real typed text"
   # (see fm_composer_normalize_blanks above).
-  fm_composer_normalize_blanks content
-  fm_composer_normalize_blanks plain_content
+  content=$(fm_composer_normalize_blanks "$content")
+  plain_content=$(fm_composer_normalize_blanks "$plain_content")
   if [ "$bordered" != 1 ] && [ -z "$content" ] && [ -n "$plain_content" ]; then
     case "$plain_content" in
       '❯'|'›') printf 'empty'; return 0 ;;
