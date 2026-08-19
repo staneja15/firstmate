@@ -160,6 +160,82 @@ fm_composer_strip_ghost() {
   '
 }
 
+# INVISIBLE COMPOSER PADDING is the THIRD failure mode this owner handles (task
+# away-mode-composer-guard-blind-aw3): a harness may pad an otherwise-empty
+# composer with a Unicode blank that POSIX `[[:space:]]` does not match, so
+# every whitespace trim in this file and in the adapters walks straight past it
+# and an idle composer classifies as `pending` - real unsubmitted text. Verified
+# live on 2026-08-19 against a real idle Claude Code 2.x pane on BOTH ANSI
+# backends: it draws its composer as a bare `❯` (U+276F) followed by U+00A0
+# NO-BREAK SPACE, so the exact-glyph cases below missed by one invisible byte
+# pair, the leading-glyph strip left a lone U+00A0 behind, and the row read
+# `pending`. That is the away-mode wedge: the injection guard could never pass,
+# so the daemon deferred every escalation for the whole window (59801s
+# undelivered on 2026-08-19, 52198s on 2026-08-02).
+#
+# Note the glyph's own styling is NOT the signal and must not be relied on: the
+# same row arrived unstyled through herdr's ANSI pane read and as a 256-colour
+# foreground (SGR 38;5;246) through `tmux capture-pane -e`. Both are KEPT by
+# fm_composer_strip_ghost by design, so the blank is the whole defect.
+#
+# fm_composer_normalize_blanks is deliberately NOT a relaxation of the guard. A
+# composer holding only invisible blanks is exactly what "nothing typed here"
+# looks like on screen, so reading it as empty is what a human would call
+# correct. The two rules that make this guard safe are untouched: a bare shell
+# glyph still reads `unknown` (dead shell), and real typed text still reads
+# `pending` no matter how it is padded. Zero-width blanks are normalized for the
+# same reason - text that renders as nothing cannot be input a captain would
+# lose. It runs inside fm_composer_classify_content, the one place the verdict
+# is decided, so every adapter is covered without each having to remember.
+#
+# RESIDUAL GAP, UNFIXED and recorded so it is not lost: normalization runs at the
+# verdict, which is AFTER tmux's structural pass. fm_tmux_composer_geometry_spaces
+# (bin/fm-tmux-lib.sh) neutralises only ASCII printables, so a surviving U+00A0
+# inside a BORDERED composer row is still a non-[[:space:]] byte there, sets
+# geometry_ambiguous, and fm_tmux_composer_state reports `unknown` even when every
+# row is otherwise empty - so a harness drawing an NBSP-padded bordered composer
+# would still defer every away-mode injection on tmux. No harness observed in this
+# fleet draws one (the claude composer that caused this defect is unbordered), and
+# it fails closed rather than open, so it is deliberately left alone rather than
+# changed without live evidence. The fix belongs in the tmux geometry pass.
+FM_COMPOSER_BLANK_CHARS=(
+  $'\xc2\xa0'      # U+00A0 NO-BREAK SPACE - claude 2.x composer padding (verified live)
+  $'\xe2\x80\x80'  # U+2000 EN QUAD
+  $'\xe2\x80\x81'  # U+2001 EM QUAD
+  $'\xe2\x80\x82'  # U+2002 EN SPACE
+  $'\xe2\x80\x83'  # U+2003 EM SPACE
+  $'\xe2\x80\x84'  # U+2004 THREE-PER-EM SPACE
+  $'\xe2\x80\x85'  # U+2005 FOUR-PER-EM SPACE
+  $'\xe2\x80\x86'  # U+2006 SIX-PER-EM SPACE
+  $'\xe2\x80\x87'  # U+2007 FIGURE SPACE
+  $'\xe2\x80\x88'  # U+2008 PUNCTUATION SPACE
+  $'\xe2\x80\x89'  # U+2009 THIN SPACE
+  $'\xe2\x80\x8a'  # U+200A HAIR SPACE
+  $'\xe2\x80\x8b'  # U+200B ZERO WIDTH SPACE
+  $'\xe2\x80\xaf'  # U+202F NARROW NO-BREAK SPACE
+  $'\xe2\x81\x9f'  # U+205F MEDIUM MATHEMATICAL SPACE
+  $'\xe3\x80\x80'  # U+3000 IDEOGRAPHIC SPACE
+  $'\xef\xbb\xbf'  # U+FEFF ZERO WIDTH NO-BREAK SPACE
+)
+
+# fm_composer_normalize_blanks: map every Unicode blank above onto an ordinary
+# ASCII space, then trim the ASCII whitespace that normalization just exposed,
+# and print the result - the single normalize-then-trim rule, applied to every
+# argument the verdict inspects. Byte-literal ($'\xNN') so it is
+# locale-independent, and pure parameter expansion so no external process runs
+# per candidate row. String in, string out: it takes the text itself, never a
+# variable name, and writes nothing in the caller's scope, so no caller can be
+# silently skipped by a name that collides with this function's own locals.
+fm_composer_normalize_blanks() {  # <text>
+  local text=$1 blank
+  for blank in "${FM_COMPOSER_BLANK_CHARS[@]}"; do
+    text=${text//"$blank"/ }
+  done
+  text="${text#"${text%%[![:space:]]*}"}"
+  text="${text%"${text##*[![:space:]]}"}"
+  printf '%s' "$text"
+}
+
 # fm_composer_classify_content: the single shared composer-content verdict.
 #   <bordered> 1 when <content> came from a genuine agent-composer container (a
 #              bordered composer box, or a structurally-identified bare AGENT
@@ -183,6 +259,11 @@ fm_composer_idle_matches() {
 fm_composer_classify_content() {  # <bordered> <content> [idle_re] [idle_case] [plain_content]
   local bordered=$1 content=$2 idle_re=${3:-} idle_case=${4:-sensitive} plain_content
   plain_content=${5:-$content}
+  # Normalize invisible composer padding FIRST, before any emptiness test, so a
+  # blank POSIX [[:space:]] does not match cannot survive as "real typed text"
+  # (see fm_composer_normalize_blanks above).
+  content=$(fm_composer_normalize_blanks "$content")
+  plain_content=$(fm_composer_normalize_blanks "$plain_content")
   if [ "$bordered" != 1 ] && [ -z "$content" ] && [ -n "$plain_content" ]; then
     case "$plain_content" in
       '❯'|'›') printf 'empty'; return 0 ;;

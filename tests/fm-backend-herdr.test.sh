@@ -1797,6 +1797,81 @@ test_composer_state_popup_placeholder_fill_is_pending() {
   pass "fm_backend_herdr_composer_state: a slash-command popup's argument-hint placeholder still reads pending (the incident fix)"
 }
 
+# Live-verified defect (2026-08-19, task away-mode-composer-guard-blind-aw3):
+# captured from this fleet's OWN primary claude pane with
+# fm_backend_herdr_capture_ansi while the composer was idle and nothing was
+# typed. Claude Code 2.x draws its composer as a bare U+276F glyph between two
+# horizontal rules and pads it with U+00A0 NO-BREAK SPACE, which POSIX
+# [[:space:]] does not match, so the row read `pending` - real unsubmitted text -
+# and the away-mode injector deferred every escalation for the whole window
+# (59801s undelivered). The rules are rendered at rgb(136,136,136), which is
+# ABOVE FM_COMPOSER_GHOST_LUMA_MAX; they are kept in the fixture because the fix
+# must not depend on the ghost ceiling moving.
+test_composer_state_claude_nbsp_padded_bare_row_is_empty() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/composer-claude-nbsp"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '\033[0m\033[38;2;136;136;136m────────────────────────\033[0m\n\xe2\x9d\xaf\xc2\xa0 \n\033[0m\033[38;2;136;136;136m────────────────────────\033[0m\n  \033[0m\033[38;2;255;193;7m auto mode on\033[0m\n' > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
+  [ "$out" = empty ] \
+    || fail "the real U+00A0-padded claude composer must read empty (injectable), got '$out'"
+  pass "fm_backend_herdr_composer_state: the real claude 2.x U+00A0-padded composer row reads empty"
+}
+
+# Fixing the false negative above must not open a false positive against a dead
+# shell. On THIS adapter that protection is STRUCTURAL, not classifier-based:
+# FM_BACKEND_HERDR_BARE_PROMPT_RE is '^[❯›]', so a bare shell glyph is never
+# promoted to a composer candidate at all and the verdict falls out of the
+# no-composer-row path without the shared classifier ever being consulted. The
+# classifier's own dead-shell rule is pinned by tests/fm-composer-lib.test.sh and
+# tests/fm-composer-ghost.test.sh. What this case pins is the bordered-versus-bare
+# distinction the structural gate draws: the SAME shell glyph, padded the same
+# way, stays unknown bare and reads empty inside a genuine bordered composer box,
+# which is the harness's own prompt and a safe injection target.
+test_composer_state_nbsp_padded_shell_prompt_bare_unknown_bordered_empty() {
+  local dir log resp fb out glyph idx=1
+  dir="$TMP_ROOT/composer-nbsp-shell"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  for glyph in '>' '$' '%' '#'; do
+    printf '%s\xc2\xa0\n' "$glyph" > "$resp/$idx.out"
+    idx=$((idx + 1))
+  done
+  fb=$(make_herdr_fakebin "$dir")
+  for glyph in '>' '$' '%' '#'; do
+    out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+      bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
+    [ "$out" = unknown ] \
+      || fail "a U+00A0-padded bare shell prompt '$glyph' must stay unknown, got '$out'"
+  done
+
+  dir="$TMP_ROOT/composer-nbsp-shell-bordered"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; : > "$log"; idx=1
+  for glyph in '>' '$' '%' '#'; do
+    printf '\xe2\x94\x82 %s\xc2\xa0 \xe2\x94\x82\n' "$glyph" > "$resp/$idx.out"
+    idx=$((idx + 1))
+  done
+  fb=$(make_herdr_fakebin "$dir")
+  for glyph in '>' '$' '%' '#'; do
+    out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+      bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
+    [ "$out" = empty ] \
+      || fail "a U+00A0-padded shell glyph '$glyph' inside a bordered composer must read empty, got '$out'"
+  done
+  pass "fm_backend_herdr_composer_state: a U+00A0-padded shell glyph is unknown bare and empty inside a bordered composer"
+}
+
+test_composer_state_nbsp_padded_real_text_is_still_pending() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/composer-nbsp-text"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '\xe2\x9d\xaf\xc2\xa0merge the copy-sections PR\xc2\xa0\n' > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
+  [ "$out" = pending ] \
+    || fail "U+00A0-padded real typed text must still read pending, got '$out'"
+  pass "fm_backend_herdr_composer_state: real typed text padded with U+00A0 is still pending"
+}
+
 test_composer_state_unknown_on_capture_failure() {
   local dir log resp fb out status
   dir="$TMP_ROOT/composer-capture-fail"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
@@ -3051,6 +3126,9 @@ test_composer_state_bare_prompt_is_empty
 test_composer_state_ghost_placeholder_is_empty
 test_composer_state_real_text_is_pending
 test_composer_state_popup_placeholder_fill_is_pending
+test_composer_state_claude_nbsp_padded_bare_row_is_empty
+test_composer_state_nbsp_padded_shell_prompt_bare_unknown_bordered_empty
+test_composer_state_nbsp_padded_real_text_is_still_pending
 test_composer_state_unknown_on_capture_failure
 test_composer_state_unknown_when_no_composer_row_found
 test_composer_state_pi_separator_idle_is_empty

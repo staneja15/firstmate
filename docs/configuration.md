@@ -102,6 +102,19 @@ That keeps a tmux pane nested inside herdr on the tmux transport, matching the r
 Target detection uses `FM_SUPERVISOR_TARGET`, then `$TMUX_PANE`, then `"${HERDR_SESSION:-default}:${HERDR_PANE_ID}"` under herdr, then the legacy `firstmate:0` tmux fallback with a warning.
 Selecting any other supervisor backend, including `zellij`, `orca`, or `cmux`, refuses at daemon startup instead of trying tmux injection primitives against a non-tmux pane.
 
+## Standing away-mode refusal (config/afk-refuse)
+
+A home can durably refuse away mode, so an instruction to stay out of it survives without an agent remembering it.
+`config/afk-refuse` (local, gitignored, not inherited by secondmate homes) holds the refusal, and its non-blank lines are the reason.
+While it is present and non-blank, `bin/fm-afk-start.sh` exits 3 and `bin/fm-afk-launch.sh start` and `start-native` refuse, each printing the reason and changing no state, terminal, or flag.
+The printed reason is bounded at the first 20 non-blank lines because it lands in a live pane, and an over-long reason ends with an explicit `afk:   ... (reason truncated after 20 of N lines; read <file> in full)` marker, so nothing is ever dropped silently.
+`stop` and `reconcile` are never gated, so a home that is already away can always be brought back, and normal per-wake supervision is unaffected either way.
+A missing file means no refusal, and a present-but-blank file means no refusal, so away mode is never disabled by an accident that names no reason.
+A present-but-unreadable file refuses: a refusal may well be recorded in it, so the gate fails closed and says the file exists but could not be read, and away mode stays out until the file is made readable or removed.
+Remove the file to clear the refusal.
+
+This exists because a captain instruction not to enter away mode was recorded only in a backlog task body, which the `/afk` path never reads, and firstmate entered away mode against it.
+
 ## Away-mode wedge alarm channels (config/wedge-alarm)
 
 When away-mode injection wedges past `FM_MAX_DEFER_SECS`, the sub-supervisor raises a loud, rate-limited alarm.
@@ -438,7 +451,7 @@ FM_FLEET_SYNC_PACKED_REFS_LOCK_RETRIES=3        # fetch retries after fm-fleet-s
 FM_FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS=1 # seconds fm-fleet-sync.sh waits before each of those retries
 FM_FLEET_SYNC_PACKED_REFS_LOCK_AGE_SECS=30       # min mtime age before fm-fleet-sync.sh treats a leftover packed-refs.lock as provably stale
 FM_BUSY_REGEX=          # optional global override for every harness-scoped busy-pane matcher; unset uses each recorded harness's verified signature
-FM_COMPOSER_IDLE_RE=    # optional empty-composer regex, applied after ghost and border stripping
+FM_COMPOSER_IDLE_RE=    # optional empty-composer regex, applied after ghost and border stripping and after invisible composer padding (U+00A0 and other Unicode blanks) is normalized to ASCII space and trimmed
 FM_COMPOSER_GHOST_LUMA_MAX=128   # fleet-wide: max perceived luminance (0.299R+0.587G+0.114B, 0-255) for a TRUECOLOR foreground to count as de-emphasised ghost/placeholder text and be stripped; dim/faint (SGR 2) is stripped regardless. Assumes a dark terminal theme (bin/fm-composer-lib.sh's fm_composer_strip_ghost, shared by the tmux and herdr composer readers)
 GROK_HOME=              # optional Grok config home for firstmate's global grok turn-end hook; defaults to ~/.grok
 FM_SEND_RETRIES=3       # fm-send Enter-retry attempts after typing the line once

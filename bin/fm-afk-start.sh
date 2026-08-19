@@ -3,8 +3,9 @@
 # foreground process when one is not already alive.
 #
 # Usage: fm-afk-start.sh
-#   Sets state/.afk unless FM_AFK_STATE_PREPARED=1, checks
-#   state/.supervise-daemon.lock, and:
+#   Refuses with exit 3 and changes nothing when this home holds a standing
+#   away-mode refusal (a non-empty, or unreadable, config/afk-refuse); else sets state/.afk
+#   unless FM_AFK_STATE_PREPARED=1, checks state/.supervise-daemon.lock, and:
 #     - prints "afk: daemon already running pid=<pid>" then exits 0 when that
 #       lock is held by a live daemon (a REFRESH: no stale-artifact clear);
 #     - otherwise clears any prior away session's stale escalation artifacts
@@ -36,6 +37,8 @@ FM_AFK_START_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$FM_AFK_START_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 FM_AFK_STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+FM_AFK_CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
+FM_AFK_REFUSE_FILE="$FM_AFK_CONFIG/afk-refuse"
 FM_AFK_LOCK="$FM_AFK_STATE/.supervise-daemon.lock"
 FM_AFK_DAEMON="$FM_AFK_START_DIR/fm-supervise-daemon.sh"
 
@@ -44,6 +47,70 @@ FM_AFK_DAEMON="$FM_AFK_START_DIR/fm-supervise-daemon.sh"
 
 fm_afk_start_usage() {
   sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+# STANDING AWAY-MODE REFUSAL (task away-mode-composer-guard-blind-aw3).
+#
+# Why this exists: on 2026-08-18 firstmate entered away mode against a standing
+# captain instruction not to. The instruction was real and still in force, but it
+# lived only in a backlog task body, which the /afk path never reads, so nothing
+# could stop it - and the run then wedged for 59801s exactly as the instruction
+# had anticipated. An instruction that only an agent's memory enforces is not
+# enforced.
+#
+# The mechanism is deliberately the smallest thing that works: a non-empty
+# config/afk-refuse in this home holds the refusal, and its non-blank lines are
+# the reason, printed so whoever hits it learns WHY without hunting for the
+# backlog item. Both away-mode entry paths consult it before touching any state,
+# so the refusal cannot be entered around; clearing it is `rm`. It gates ENTRY
+# only - never the return path - so a home can always come back out of away mode,
+# and per-wake supervision is untouched either way.
+#
+# The printed reason is bounded at FM_AFK_REFUSE_MAX_LINES non-blank lines
+# because it lands in a live pane, but a bound that dropped lines silently would
+# recreate the very loss this file exists to prevent, so an over-long reason ends
+# with an explicit truncation marker naming the file to read in full.
+#
+# Absent means no refusal, and present-but-blank means no refusal (away mode must
+# never be disabled by an accident that names no reason). Present-but-UNREADABLE
+# refuses: the file is there, so a refusal may well be recorded in it, and the
+# only safe reading of a gate we cannot read is that it is closed.
+FM_AFK_REFUSE_MAX_LINES=20
+
+fm_afk_refusal_reason() {
+  local reason total status=0
+  [ -f "$FM_AFK_REFUSE_FILE" ] || return 1
+  # grep exits 1 for "no non-blank lines" (deliberately NOT a refusal) but 2 for
+  # an I/O or permission error on a file that IS present. Collapsing the two
+  # would let an unreadable refusal file permit away-mode entry silently, which
+  # is exactly backwards for a gate whose whole job is to stop it, so a file we
+  # cannot read is itself a standing refusal.
+  reason=$(grep -v '^[[:space:]]*$' "$FM_AFK_REFUSE_FILE" 2>/dev/null) || status=$?
+  if [ "$status" -ge 2 ]; then
+    printf '%s exists but could not be read (grep exit %s); away mode fails closed until it is made readable or removed\n' \
+      "$FM_AFK_REFUSE_FILE" "$status"
+    return 0
+  fi
+  [ -n "$reason" ] || return 1
+  total=$(printf '%s\n' "$reason" | wc -l | tr -d '[:space:]')
+  printf '%s\n' "$reason" | head -n "$FM_AFK_REFUSE_MAX_LINES"
+  [ "$total" -le "$FM_AFK_REFUSE_MAX_LINES" ] || \
+    printf '... (reason truncated after %s of %s lines; read %s in full)\n' \
+      "$FM_AFK_REFUSE_MAX_LINES" "$total" "$FM_AFK_REFUSE_FILE"
+}
+
+# fm_afk_refuse_if_standing: return 0 when away mode may be entered; print the
+# refusal loudly and return 1 when it may not.
+fm_afk_refuse_if_standing() {
+  local reason
+  reason=$(fm_afk_refusal_reason) || return 0
+  {
+    printf 'afk: REFUSED - away mode is disabled in this home by %s\n' "$FM_AFK_REFUSE_FILE"
+    printf '%s\n' "$reason" | sed 's/^/afk:   /'
+    printf 'afk: nothing was changed. Remove that file to re-enable away mode.\n'
+    printf 'afk: normal per-wake supervision is unaffected and stays available.\n'
+  } >&2
+  return 1
 }
 
 # fm_afk_clear_stale_artifacts: on a FRESH away-session entry (the daemon is not
@@ -116,6 +183,9 @@ fm_afk_start_main() {
     -h|--help) fm_afk_start_usage; return 0 ;;
     * ) echo "usage: $(basename "${BASH_SOURCE[1]:-fm-afk-start.sh}")" >&2; return 2 ;;
   esac
+
+  # Before ANY mutation, including the state/.afk write below.
+  fm_afk_refuse_if_standing || return 3
 
   mkdir -p "$FM_AFK_STATE"
   if [ "${FM_AFK_STATE_PREPARED:-0}" = 1 ]; then

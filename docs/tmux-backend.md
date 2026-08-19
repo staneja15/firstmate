@@ -57,6 +57,7 @@ Agent liveness and composer safety are separate checks.
 For a bordered composer, the tmux reader locates the complete box structurally and classifies every content row through the shared ANSI and ghost handling in `bin/fm-composer-lib.sh`.
 Real text on any content row is pending, while only an unambiguous box with every row empty is proven empty.
 Unreadable, incomplete, or structurally ambiguous boxes fail closed, and panes without a bordered composer retain the compatible cursor-row classification.
+That non-bordered route is the one a current Claude Code pane takes, and its Unicode composer padding is normalized by the same shared owner; see [Composer and injection safety](herdr-backend.md#composer-and-injection-safety) for the fleet-wide contract.
 The shared classifier accepts a shell glyph as an empty agent composer only inside a verified bordered composer.
 A bare shell prompt is `unknown`, so away-mode escalation is never injected into a dead shell.
 
