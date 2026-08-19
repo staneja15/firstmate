@@ -109,7 +109,8 @@ A home can durably refuse away mode, so an instruction to stay out of it survive
 While it is present and non-blank, `bin/fm-afk-start.sh` exits 3 and `bin/fm-afk-launch.sh start` and `start-native` refuse, each printing the reason and changing no state, terminal, or flag.
 The printed reason is bounded at the first 20 non-blank lines because it lands in a live pane, and an over-long reason ends with an explicit `afk:   ... (reason truncated after 20 of N lines; read <file> in full)` marker, so nothing is ever dropped silently.
 `stop` and `reconcile` are never gated, so a home that is already away can always be brought back, and normal per-wake supervision is unaffected either way.
-A missing or blank file means no refusal, so away mode is never disabled by an accident that names no reason.
+A missing file means no refusal, and a present-but-blank file means no refusal, so away mode is never disabled by an accident that names no reason.
+A present-but-unreadable file refuses: a refusal may well be recorded in it, so the gate fails closed and says the file exists but could not be read, and away mode stays out until the file is made readable or removed.
 Remove the file to clear the refusal.
 
 This exists because a captain instruction not to enter away mode was recorded only in a backlog task body, which the `/afk` path never reads, and firstmate entered away mode against it.

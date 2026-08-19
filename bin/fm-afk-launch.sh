@@ -37,7 +37,7 @@
 #                              id and drop the record (recovery after a crash).
 #
 # `start` and `start-native` refuse, and change nothing, while this home holds a
-# standing away-mode refusal (a non-empty config/afk-refuse); `stop` and
+# standing away-mode refusal (a non-empty, or unreadable, config/afk-refuse); `stop` and
 # `reconcile` always run, so an away home can always be brought back.
 #
 # Supported backends: herdr, tmux. Others (zellij, orca, cmux) have no verified

@@ -71,7 +71,7 @@ config/backend  runtime session-provider backend override for new tasks; LOCAL, 
 config/calm     Pi Calm presentation preference; LOCAL, gitignored, and not inherited; see docs/configuration.md "Pi Calm preference"
 config/herdr-presentation-spaces  optional presence flag for Herdr's default-off disposable single-task visual projection; LOCAL, gitignored; inherited by secondmate homes; see docs/herdr-backend.md "Optional presentation spaces"
 config/cmux-socket-password  optional cmux control-socket password; LOCAL, gitignored; read fresh on every cmux CLI call and passed through without ever overriding an operator's own ambient CMUX_SOCKET_PASSWORD when absent (docs/cmux-backend.md "Setup")
-config/afk-refuse  optional standing away-mode refusal; LOCAL, gitignored, not inherited; present and non-blank refuses every away-mode entry and prints its non-blank lines as the reason, bounded at 20 lines with an explicit truncation marker beyond that; see docs/configuration.md "Standing away-mode refusal"
+config/afk-refuse  optional standing away-mode refusal; LOCAL, gitignored, not inherited; present and non-blank (or present and unreadable) refuses every away-mode entry and prints its non-blank lines as the reason, bounded at 20 lines with an explicit truncation marker beyond that; see docs/configuration.md "Standing away-mode refusal"
 config/wedge-alarm  optional away-mode wedge-alarm active-alert directives; LOCAL, gitignored; absent means auto (macOS Notification Center when available); see docs/wedge-alarm.md
 config/x-mode.env    generated X-mode watcher cadence; LOCAL, gitignored; source before arming watcher when present
 data/                personal fleet records; LOCAL, gitignored as a whole

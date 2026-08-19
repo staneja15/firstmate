@@ -187,6 +187,17 @@ fm_composer_strip_ghost() {
 # same reason - text that renders as nothing cannot be input a captain would
 # lose. It runs inside fm_composer_classify_content, the one place the verdict
 # is decided, so every adapter is covered without each having to remember.
+#
+# RESIDUAL GAP, UNFIXED and recorded so it is not lost: normalization runs at the
+# verdict, which is AFTER tmux's structural pass. fm_tmux_composer_geometry_spaces
+# (bin/fm-tmux-lib.sh) neutralises only ASCII printables, so a surviving U+00A0
+# inside a BORDERED composer row is still a non-[[:space:]] byte there, sets
+# geometry_ambiguous, and fm_tmux_composer_state reports `unknown` even when every
+# row is otherwise empty - so a harness drawing an NBSP-padded bordered composer
+# would still defer every away-mode injection on tmux. No harness observed in this
+# fleet draws one (the claude composer that caused this defect is unbordered), and
+# it fails closed rather than open, so it is deliberately left alone rather than
+# changed without live evidence. The fix belongs in the tmux geometry pass.
 FM_COMPOSER_BLANK_CHARS=(
   $'\xc2\xa0'      # U+00A0 NO-BREAK SPACE - claude 2.x composer padding (verified live)
   $'\xe2\x80\x80'  # U+2000 EN QUAD
@@ -208,15 +219,21 @@ FM_COMPOSER_BLANK_CHARS=(
 )
 
 # fm_composer_normalize_blanks: map every Unicode blank above onto an ordinary
-# ASCII space and print the result, so the callers' `[[:space:]]` trims reach it.
-# Byte-literal ($'\xNN') so it is locale-independent, and pure parameter
-# expansion so no external process runs per candidate row.
-fm_composer_normalize_blanks() {  # <text>
-  local text=$1 blank
+# ASCII space in the NAMED variable, then trim the ASCII whitespace that
+# normalization just exposed, in place. Byte-literal ($'\xNN') so it is
+# locale-independent, and pure parameter expansion read back through the named
+# variable so no subshell or external process runs per candidate row - this is
+# the single normalize-then-trim rule, applied to every argument the verdict
+# inspects. Indirect read plus `printf -v` rather than a nameref, so this stays
+# runnable on stock macOS Bash 3.2 like the rest of the shared libraries.
+fm_composer_normalize_blanks() {  # <var-name>
+  local name=$1 text=${!1} blank
   for blank in "${FM_COMPOSER_BLANK_CHARS[@]}"; do
     text=${text//"$blank"/ }
   done
-  printf '%s' "$text"
+  text="${text#"${text%%[![:space:]]*}"}"
+  text="${text%"${text##*[![:space:]]}"}"
+  printf -v "$name" '%s' "$text"
 }
 
 # fm_composer_classify_content: the single shared composer-content verdict.
@@ -244,14 +261,9 @@ fm_composer_classify_content() {  # <bordered> <content> [idle_re] [idle_case] [
   plain_content=${5:-$content}
   # Normalize invisible composer padding FIRST, before any emptiness test, so a
   # blank POSIX [[:space:]] does not match cannot survive as "real typed text"
-  # (see fm_composer_normalize_blanks above). Both arguments arrive already
-  # trimmed from the adapters, so re-trim what normalization just exposed.
-  content=$(fm_composer_normalize_blanks "$content")
-  content="${content#"${content%%[![:space:]]*}"}"
-  content="${content%"${content##*[![:space:]]}"}"
-  plain_content=$(fm_composer_normalize_blanks "$plain_content")
-  plain_content="${plain_content#"${plain_content%%[![:space:]]*}"}"
-  plain_content="${plain_content%"${plain_content##*[![:space:]]}"}"
+  # (see fm_composer_normalize_blanks above).
+  fm_composer_normalize_blanks content
+  fm_composer_normalize_blanks plain_content
   if [ "$bordered" != 1 ] && [ -z "$content" ] && [ -n "$plain_content" ]; then
     case "$plain_content" in
       '❯'|'›') printf 'empty'; return 0 ;;

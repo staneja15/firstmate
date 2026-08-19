@@ -174,14 +174,21 @@ test_blank_padded_real_text_is_still_pending() {
 
 test_normalize_blanks_leaves_visible_text_alone() {
   local out
-  out=$(fm_composer_normalize_blanks 'plain ascii text')
+  out='plain ascii text'
+  fm_composer_normalize_blanks out
   [ "$out" = 'plain ascii text' ] || fail "normalization altered plain ASCII: '$out'"
   # A multibyte glyph that is NOT a blank must survive byte-for-byte.
-  out=$(fm_composer_normalize_blanks "$(printf '\xe2\x9d\xaf')")
+  out=$(printf '\xe2\x9d\xaf')
+  fm_composer_normalize_blanks out
   [ "$out" = "$(printf '\xe2\x9d\xaf')" ] || fail "normalization damaged the '❯' glyph"
-  out=$(fm_composer_normalize_blanks "$(printf 'caf\xc3\xa9 \xe6\x97\xa5\xe6\x9c\xac')")
+  out=$(printf 'caf\xc3\xa9 \xe6\x97\xa5\xe6\x9c\xac')
+  fm_composer_normalize_blanks out
   [ "$out" = "$(printf 'caf\xc3\xa9 \xe6\x97\xa5\xe6\x9c\xac')" ] \
     || fail "normalization damaged accented or CJK text: '$out'"
+  # Interior blanks are normalized without collapsing the text around them.
+  out=$(printf 'ship\xc2\xa0it')
+  fm_composer_normalize_blanks out
+  [ "$out" = 'ship it' ] || fail "an interior blank was not normalized to a space: '$out'"
   pass "fm_composer_normalize_blanks: visible text, including multibyte, is untouched"
 }
 

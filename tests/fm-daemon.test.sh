@@ -104,13 +104,44 @@ test_afk_start_ignores_an_empty_refusal_file() {
   pass "fm-afk-start.sh treats a blank refusal file as no refusal"
 }
 
+test_afk_start_refuses_an_unreadable_refusal_file() {
+  local dir state config out status
+  dir=$(make_supercase afk-start-unreadable-refusal)
+  state="$dir/state"; config="$dir/config"; mkdir -p "$config"
+  printf 'Away mode stays off.\n' > "$config/afk-refuse"
+  chmod 000 "$config/afk-refuse"
+  # A file present but unreadable must fail CLOSED: a refusal may well be
+  # recorded in it, and permitting entry because the gate cannot be read is the
+  # silent failure this whole mechanism exists to prevent. Root reads a chmod
+  # 000 file regardless, so there is nothing to observe there.
+  if [ -r "$config/afk-refuse" ]; then
+    chmod 600 "$config/afk-refuse"
+    pass "SKIP (this user can read a chmod 000 file): unreadable refusal file check"
+    return 0
+  fi
+
+  out=$(FM_STATE_OVERRIDE="$state" FM_CONFIG_OVERRIDE="$config" \
+    FM_SUPERVISOR_BACKEND=unsupported "$AFK_START" 2>&1)
+  status=$?
+  chmod 600 "$config/afk-refuse"
+
+  [ "$status" -eq 3 ] || fail "an unreadable refusal file should exit 3, got $status"
+  assert_contains "$out" "REFUSED" "an unreadable refusal file was not reported loudly"
+  assert_contains "$out" "could not be read" "the refusal did not say the file was unreadable"
+  assert_contains "$out" "$config/afk-refuse" "the refusal did not name the unreadable file"
+  assert_not_contains "$out" "starting supervise daemon" "an unreadable refusal file still started the daemon"
+  assert_absent "$state/.afk" "an unreadable refusal file still wrote the away-mode flag"
+  pass "fm-afk-start.sh treats an unreadable refusal file as a standing refusal"
+}
+
 test_afk_start_refuses_when_flag_cannot_be_written() {
-  local dir state out status
+  local dir state config out status
   dir=$(make_supercase afk-start-flag-unwritable)
-  state="$dir/state"
+  state="$dir/state"; config="$dir/config"; mkdir -p "$config"
   mkdir -p "$state/.afk"
 
-  out=$(FM_STATE_OVERRIDE="$state" FM_SUPERVISOR_BACKEND=unsupported "$AFK_START" 2>&1)
+  out=$(FM_STATE_OVERRIDE="$state" FM_CONFIG_OVERRIDE="$config" \
+    FM_SUPERVISOR_BACKEND=unsupported "$AFK_START" 2>&1)
   status=$?
 
   [ "$status" -ne 0 ] || fail "fm-afk-start.sh should fail when state/.afk cannot be written"
@@ -120,12 +151,13 @@ test_afk_start_refuses_when_flag_cannot_be_written() {
 }
 
 test_afk_start_ignores_stale_pidfile_without_lock() {
-  local dir state out status
+  local dir state config out status
   dir=$(make_supercase afk-start-stale-pidfile)
-  state="$dir/state"
+  state="$dir/state"; config="$dir/config"; mkdir -p "$config"
   printf '%s\n' "$$" > "$state/.supervise-daemon.pid"
 
-  out=$(FM_STATE_OVERRIDE="$state" FM_SUPERVISOR_BACKEND=unsupported "$AFK_START" 2>&1)
+  out=$(FM_STATE_OVERRIDE="$state" FM_CONFIG_OVERRIDE="$config" \
+    FM_SUPERVISOR_BACKEND=unsupported "$AFK_START" 2>&1)
   status=$?
 
   [ "$status" -ne 0 ] || fail "fm-afk-start.sh should attempt daemon startup instead of trusting a pidfile-only live pid"
@@ -136,16 +168,17 @@ test_afk_start_ignores_stale_pidfile_without_lock() {
 }
 
 test_afk_start_reclaims_stale_daemon_lock_reused_pid() {
-  local dir state out status lock
+  local dir state config out status lock
   dir=$(make_supercase afk-start-stale-lock-reused-pid)
-  state="$dir/state"
+  state="$dir/state"; config="$dir/config"; mkdir -p "$config"
   lock="$state/.supervise-daemon.lock"
   mkdir -p "$lock"
   printf '%s\n' "$$" > "$state/.supervise-daemon.pid"
   printf '%s\n' "$$" > "$lock/pid"
   printf '%s\n' "stale daemon identity" > "$lock/pid-identity"
 
-  out=$(FM_STATE_OVERRIDE="$state" FM_SUPERVISOR_BACKEND=unsupported "$AFK_START" 2>&1)
+  out=$(FM_STATE_OVERRIDE="$state" FM_CONFIG_OVERRIDE="$config" \
+    FM_SUPERVISOR_BACKEND=unsupported "$AFK_START" 2>&1)
   status=$?
 
   [ "$status" -ne 0 ] || fail "fm-afk-start.sh should attempt daemon startup after rejecting a reused-pid lock"
@@ -1850,6 +1883,7 @@ test_afk_start_refuses_a_standing_refusal_before_mutating
 test_afk_start_marks_a_truncated_refusal_reason
 test_afk_start_does_not_mark_an_untruncated_refusal_reason
 test_afk_start_ignores_an_empty_refusal_file
+test_afk_start_refuses_an_unreadable_refusal_file
 test_afk_start_refuses_when_flag_cannot_be_written
 test_afk_start_ignores_stale_pidfile_without_lock
 test_afk_start_reclaims_stale_daemon_lock_reused_pid

@@ -4,7 +4,7 @@
 #
 # Usage: fm-afk-start.sh
 #   Refuses with exit 3 and changes nothing when this home holds a standing
-#   away-mode refusal (a non-empty config/afk-refuse); otherwise sets state/.afk
+#   away-mode refusal (a non-empty, or unreadable, config/afk-refuse); else sets state/.afk
 #   unless FM_AFK_STATE_PREPARED=1, checks state/.supervise-daemon.lock, and:
 #     - prints "afk: daemon already running pid=<pid>" then exits 0 when that
 #       lock is held by a live daemon (a REFRESH: no stale-artifact clear);
@@ -70,12 +70,27 @@ fm_afk_start_usage() {
 # because it lands in a live pane, but a bound that dropped lines silently would
 # recreate the very loss this file exists to prevent, so an over-long reason ends
 # with an explicit truncation marker naming the file to read in full.
+#
+# Absent means no refusal, and present-but-blank means no refusal (away mode must
+# never be disabled by an accident that names no reason). Present-but-UNREADABLE
+# refuses: the file is there, so a refusal may well be recorded in it, and the
+# only safe reading of a gate we cannot read is that it is closed.
 FM_AFK_REFUSE_MAX_LINES=20
 
 fm_afk_refusal_reason() {
-  local reason total
+  local reason total status=0
   [ -f "$FM_AFK_REFUSE_FILE" ] || return 1
-  reason=$(grep -v '^[[:space:]]*$' "$FM_AFK_REFUSE_FILE" 2>/dev/null) || return 1
+  # grep exits 1 for "no non-blank lines" (deliberately NOT a refusal) but 2 for
+  # an I/O or permission error on a file that IS present. Collapsing the two
+  # would let an unreadable refusal file permit away-mode entry silently, which
+  # is exactly backwards for a gate whose whole job is to stop it, so a file we
+  # cannot read is itself a standing refusal.
+  reason=$(grep -v '^[[:space:]]*$' "$FM_AFK_REFUSE_FILE" 2>/dev/null) || status=$?
+  if [ "$status" -ge 2 ]; then
+    printf '%s exists but could not be read (grep exit %s); away mode fails closed until it is made readable or removed\n' \
+      "$FM_AFK_REFUSE_FILE" "$status"
+    return 0
+  fi
   [ -n "$reason" ] || return 1
   total=$(printf '%s\n' "$reason" | wc -l | tr -d '[:space:]')
   printf '%s\n' "$reason" | head -n "$FM_AFK_REFUSE_MAX_LINES"
