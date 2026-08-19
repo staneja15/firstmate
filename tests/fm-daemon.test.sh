@@ -36,7 +36,8 @@ test_afk_start_refuses_a_standing_refusal_before_mutating() {
   state="$dir/state"; config="$dir/config"; mkdir -p "$config"
   printf 'Away mode stays off until the injection wedge is fixed.\n' > "$config/afk-refuse"
 
-  out=$(FM_STATE_OVERRIDE="$state" FM_CONFIG_OVERRIDE="$config" "$AFK_START" 2>&1)
+  out=$(FM_STATE_OVERRIDE="$state" FM_CONFIG_OVERRIDE="$config" \
+    FM_SUPERVISOR_BACKEND=unsupported "$AFK_START" 2>&1)
   status=$?
 
   [ "$status" -eq 3 ] || fail "a standing refusal should exit 3, got $status"
@@ -46,6 +47,45 @@ test_afk_start_refuses_a_standing_refusal_before_mutating() {
   assert_not_contains "$out" "starting supervise daemon" "a refused entry still started the daemon"
   assert_absent "$state/.afk" "a refused entry still wrote the away-mode flag"
   pass "fm-afk-start.sh refuses a standing away-mode refusal and mutates nothing"
+}
+
+# The printed reason is bounded (FM_AFK_REFUSE_MAX_LINES), and a bound that drops
+# lines silently would recreate the loss the refusal file exists to prevent, so
+# the overflow has to announce itself.
+test_afk_start_marks_a_truncated_refusal_reason() {
+  local dir state config out status i
+  dir=$(make_supercase afk-start-long-refusal)
+  state="$dir/state"; config="$dir/config"; mkdir -p "$config"
+  : > "$config/afk-refuse"
+  for i in $(seq 1 25); do printf 'refusal reason line %s\n' "$i" >> "$config/afk-refuse"; done
+
+  out=$(FM_STATE_OVERRIDE="$state" FM_CONFIG_OVERRIDE="$config" \
+    FM_SUPERVISOR_BACKEND=unsupported "$AFK_START" 2>&1)
+  status=$?
+
+  [ "$status" -eq 3 ] || fail "an over-long refusal should still exit 3, got $status"
+  assert_contains "$out" "refusal reason line 1" "the truncated refusal dropped its first line"
+  assert_contains "$out" "refusal reason line 20" "the truncated refusal dropped its last kept line"
+  assert_not_contains "$out" "refusal reason line 21" "the refusal reason was not bounded"
+  assert_contains "$out" "reason truncated after 20 of 25 lines" \
+    "an over-long refusal reason was truncated silently"
+  assert_absent "$state/.afk" "a refused entry still wrote the away-mode flag"
+  pass "fm-afk-start.sh bounds a long refusal reason and says so"
+}
+
+test_afk_start_does_not_mark_an_untruncated_refusal_reason() {
+  local dir state config out i
+  dir=$(make_supercase afk-start-capped-refusal)
+  state="$dir/state"; config="$dir/config"; mkdir -p "$config"
+  : > "$config/afk-refuse"
+  for i in $(seq 1 20); do printf 'refusal reason line %s\n' "$i" >> "$config/afk-refuse"; done
+
+  out=$(FM_STATE_OVERRIDE="$state" FM_CONFIG_OVERRIDE="$config" \
+    FM_SUPERVISOR_BACKEND=unsupported "$AFK_START" 2>&1)
+
+  assert_contains "$out" "refusal reason line 20" "a reason at the cap lost its last line"
+  assert_not_contains "$out" "reason truncated" "a reason at the cap was marked as truncated"
+  pass "fm-afk-start.sh does not mark a refusal reason that fits"
 }
 
 test_afk_start_ignores_an_empty_refusal_file() {
@@ -1807,6 +1847,8 @@ test_inject_msg_defers_on_unrecognized_composer_state() {
 }
 
 test_afk_start_refuses_a_standing_refusal_before_mutating
+test_afk_start_marks_a_truncated_refusal_reason
+test_afk_start_does_not_mark_an_untruncated_refusal_reason
 test_afk_start_ignores_an_empty_refusal_file
 test_afk_start_refuses_when_flag_cannot_be_written
 test_afk_start_ignores_stale_pidfile_without_lock

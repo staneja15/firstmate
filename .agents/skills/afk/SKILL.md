@@ -19,7 +19,7 @@ batched digest rather than per-wake injections.
 ## What it does
 
 0. **Expect a standing refusal to stop you.**
-   A home can durably refuse away mode through `config/afk-refuse`; both entry paths below check it before touching any state and refuse with the reason printed verbatim.
+   A home can durably refuse away mode through `config/afk-refuse`; both entry paths below check it before touching any state and refuse with the reason printed, bounded at 20 non-blank lines and marked as truncated when there are more.
    Do not work around a refusal, and do not enter away mode by hand instead.
    Relay the reason to the captain in `AGENTS.md` section 9 language and stay on normal per-wake supervision, which the refusal never affects.
    Only the captain's explicit word clears it, by removing that file.

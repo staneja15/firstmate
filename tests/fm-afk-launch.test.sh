@@ -56,7 +56,7 @@ unit_standing_refusal_blocks_entry_not_exit() {
 
   for cmd in start start-native; do
     out=$(FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_CONFIG_OVERRIDE="$st/config" \
-      FM_AFK_LAUNCH_ENTRY="$SLEEPER" "$LAUNCH" "$cmd" 2>&1)
+      FM_SUPERVISOR_BACKEND=unsupported FM_AFK_LAUNCH_ENTRY="$SLEEPER" "$LAUNCH" "$cmd" 2>&1)
     status=$?
     if [ "$status" -eq 0 ]; then
       fail "refusal: '$cmd' succeeded despite a standing refusal"

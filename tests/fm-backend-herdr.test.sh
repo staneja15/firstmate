@@ -1819,11 +1819,19 @@ test_composer_state_claude_nbsp_padded_bare_row_is_empty() {
   pass "fm_backend_herdr_composer_state: the real claude 2.x U+00A0-padded composer row reads empty"
 }
 
-test_composer_state_nbsp_padded_shell_prompt_is_still_unknown() {
+# Fixing the false negative above must not open a false positive against a dead
+# shell. On THIS adapter that protection is STRUCTURAL, not classifier-based:
+# FM_BACKEND_HERDR_BARE_PROMPT_RE is '^[❯›]', so a bare shell glyph is never
+# promoted to a composer candidate at all and the verdict falls out of the
+# no-composer-row path without the shared classifier ever being consulted. The
+# classifier's own dead-shell rule is pinned by tests/fm-composer-lib.test.sh and
+# tests/fm-composer-ghost.test.sh. What this case pins is the bordered-versus-bare
+# distinction the structural gate draws: the SAME shell glyph, padded the same
+# way, stays unknown bare and reads empty inside a genuine bordered composer box,
+# which is the harness's own prompt and a safe injection target.
+test_composer_state_nbsp_padded_shell_prompt_bare_unknown_bordered_empty() {
   local dir log resp fb out glyph idx=1
   dir="$TMP_ROOT/composer-nbsp-shell"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
-  # Fixing the false negative above must not open a false positive: a dead shell
-  # padded the same way stays unknown, so a digest is never typed into a shell.
   for glyph in '>' '$' '%' '#'; do
     printf '%s\xc2\xa0\n' "$glyph" > "$resp/$idx.out"
     idx=$((idx + 1))
@@ -1835,7 +1843,21 @@ test_composer_state_nbsp_padded_shell_prompt_is_still_unknown() {
     [ "$out" = unknown ] \
       || fail "a U+00A0-padded bare shell prompt '$glyph' must stay unknown, got '$out'"
   done
-  pass "fm_backend_herdr_composer_state: a U+00A0-padded bare shell prompt still reads unknown"
+
+  dir="$TMP_ROOT/composer-nbsp-shell-bordered"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; : > "$log"; idx=1
+  for glyph in '>' '$' '%' '#'; do
+    printf '\xe2\x94\x82 %s\xc2\xa0 \xe2\x94\x82\n' "$glyph" > "$resp/$idx.out"
+    idx=$((idx + 1))
+  done
+  fb=$(make_herdr_fakebin "$dir")
+  for glyph in '>' '$' '%' '#'; do
+    out=$( PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+      bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_composer_state default:w1:p2' "$ROOT" )
+    [ "$out" = empty ] \
+      || fail "a U+00A0-padded shell glyph '$glyph' inside a bordered composer must read empty, got '$out'"
+  done
+  pass "fm_backend_herdr_composer_state: a U+00A0-padded shell glyph is unknown bare and empty inside a bordered composer"
 }
 
 test_composer_state_nbsp_padded_real_text_is_still_pending() {
@@ -3105,7 +3127,7 @@ test_composer_state_ghost_placeholder_is_empty
 test_composer_state_real_text_is_pending
 test_composer_state_popup_placeholder_fill_is_pending
 test_composer_state_claude_nbsp_padded_bare_row_is_empty
-test_composer_state_nbsp_padded_shell_prompt_is_still_unknown
+test_composer_state_nbsp_padded_shell_prompt_bare_unknown_bordered_empty
 test_composer_state_nbsp_padded_real_text_is_still_pending
 test_composer_state_unknown_on_capture_failure
 test_composer_state_unknown_when_no_composer_row_found

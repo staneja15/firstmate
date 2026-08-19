@@ -149,7 +149,9 @@ Observed guarantees, comparing the pre-change tree with the current one:
 - End to end on tmux, against a real Claude Code pane on a private socket: driving `inject_msg` from the pre-change tree deferred and the pane started zero turns, while driving it from the current tree delivered and the digest arrived as one submitted turn carrying the U+2063 `FIRSTMATE_OP:` envelope.
 - The herdr side of this pass is a read-only verdict comparison against an existing pane, not a pane-lifecycle exercise; `tests/fm-afk-inject-herdr-e2e.test.sh` remains the herdr injection regression.
 
-`tests/fm-composer-lib.test.sh`, `tests/fm-composer-ghost.test.sh`, and `tests/fm-backend-herdr.test.sh` pin those captured bytes, and each also pins that a bare shell prompt padded the same way still reads `unknown` and that padded real text still reads `pending`.
+`tests/fm-composer-lib.test.sh`, `tests/fm-composer-ghost.test.sh`, and `tests/fm-backend-herdr.test.sh` pin those captured bytes, and each also pins that padded real text still reads `pending`.
+The classifier's dead-shell rule, that a bare shell glyph padded the same way still reads `unknown`, is pinned by `tests/fm-composer-lib.test.sh` and `tests/fm-composer-ghost.test.sh`.
+On herdr that protection is structural rather than classifier-based, because `FM_BACKEND_HERDR_BARE_PROMPT_RE` never promotes a shell glyph to a composer candidate, so `tests/fm-backend-herdr.test.sh` pins the structural refusal and the bordered-versus-bare distinction around it.
 
 ## Wedge-alarm channels
 

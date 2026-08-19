@@ -59,18 +59,29 @@ fm_afk_start_usage() {
 # enforced.
 #
 # The mechanism is deliberately the smallest thing that works: a non-empty
-# config/afk-refuse in this home holds the refusal, and its contents are the
-# reason, printed verbatim so whoever hits it learns WHY without hunting for the
+# config/afk-refuse in this home holds the refusal, and its non-blank lines are
+# the reason, printed so whoever hits it learns WHY without hunting for the
 # backlog item. Both away-mode entry paths consult it before touching any state,
 # so the refusal cannot be entered around; clearing it is `rm`. It gates ENTRY
 # only - never the return path - so a home can always come back out of away mode,
 # and per-wake supervision is untouched either way.
+#
+# The printed reason is bounded at FM_AFK_REFUSE_MAX_LINES non-blank lines
+# because it lands in a live pane, but a bound that dropped lines silently would
+# recreate the very loss this file exists to prevent, so an over-long reason ends
+# with an explicit truncation marker naming the file to read in full.
+FM_AFK_REFUSE_MAX_LINES=20
+
 fm_afk_refusal_reason() {
-  local reason
+  local reason total
   [ -f "$FM_AFK_REFUSE_FILE" ] || return 1
-  reason=$(grep -v '^[[:space:]]*$' "$FM_AFK_REFUSE_FILE" 2>/dev/null | head -20) || return 1
+  reason=$(grep -v '^[[:space:]]*$' "$FM_AFK_REFUSE_FILE" 2>/dev/null) || return 1
   [ -n "$reason" ] || return 1
-  printf '%s\n' "$reason"
+  total=$(printf '%s\n' "$reason" | wc -l | tr -d '[:space:]')
+  printf '%s\n' "$reason" | head -n "$FM_AFK_REFUSE_MAX_LINES"
+  [ "$total" -le "$FM_AFK_REFUSE_MAX_LINES" ] || \
+    printf '... (reason truncated after %s of %s lines; read %s in full)\n' \
+      "$FM_AFK_REFUSE_MAX_LINES" "$total" "$FM_AFK_REFUSE_FILE"
 }
 
 # fm_afk_refuse_if_standing: return 0 when away mode may be entered; print the
