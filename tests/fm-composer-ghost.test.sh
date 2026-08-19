@@ -252,6 +252,87 @@ test_dark_truecolor_bare_shell_prompt_is_unknown() {
   pass "fm_tmux_composer_state: dark truecolor shell prompts read unknown"
 }
 
+# --- Invisible composer padding (task away-mode-composer-guard-blind-aw3) ---
+#
+# The bytes below are the REAL capture of this fleet's own primary claude pane,
+# taken with `tmux capture-pane -e` on 2026-08-19 while the composer was idle
+# with nothing typed:
+#
+#   ESC[38;5;246m  U+276F(heavy right angle quote)  U+00A0(no-break space)  ESC[39m
+#
+# Claude Code 2.x draws its composer as that bare glyph between two horizontal
+# rules, and pads it with U+00A0 rather than an ordinary space. U+00A0 is NOT in
+# POSIX [[:space:]] under glibc, so every trim walked past it, the exact-glyph
+# case missed by one invisible byte pair, and a perfectly idle composer read
+# `pending` - real unsubmitted text. That is what wedged away mode: the injection
+# guard could never pass, so the daemon deferred every escalation for the whole
+# window (59801s undelivered on 2026-08-19, 52198s on 2026-08-02).
+#
+# The glyph's 256-colour foreground (38;5;246) is deliberately part of the
+# fixture: it is kept, not stripped as ghost, because 38;5;n is palette-dependent
+# (see fm_composer_strip_ghost). The fix is the blank normalization, NOT a
+# loosened ghost ceiling.
+
+test_claude_nbsp_padded_composer_is_not_pending() {
+  local dir fb capture
+  dir="$TMP_ROOT/claude-nbsp"; mkdir -p "$dir"
+  fb=$(make_fake_tmux "$dir")
+  capture="$dir/styled.txt"
+  printf '\033[38;5;246m\xe2\x9d\xaf\xc2\xa0\033[39m\n' > "$capture"
+  if PATH="$fb:$PATH" FM_FAKE_STYLED="$capture" FM_FAKE_CY=0 \
+     fm_pane_input_pending "fakepane"; then
+    fail "the real claude 2.x U+00A0-padded composer was falsely read as pending"
+  fi
+  pass "fm_pane_input_pending: the real claude 2.x U+00A0-padded composer is NOT pending"
+}
+
+test_claude_nbsp_padded_composer_reads_empty() {
+  local dir fb capture out
+  dir="$TMP_ROOT/claude-nbsp-state"; mkdir -p "$dir"
+  fb=$(make_fake_tmux "$dir")
+  capture="$dir/styled.txt"
+  # Injection safety needs the affirmative `empty` verdict, not merely
+  # "not pending": the daemon defers on `unknown` too.
+  printf '\033[38;5;246m\xe2\x9d\xaf\xc2\xa0\033[39m\n' > "$capture"
+  out=$(PATH="$fb:$PATH" FM_FAKE_STYLED="$capture" FM_FAKE_CY=0 \
+    fm_tmux_composer_state "fakepane")
+  [ "$out" = empty ] \
+    || fail "the real claude 2.x U+00A0-padded composer must read empty (injectable), got '$out'"
+  pass "fm_tmux_composer_state: the real claude 2.x U+00A0-padded composer reads empty"
+}
+
+test_nbsp_padded_bare_shell_prompt_is_still_unknown() {
+  local dir fb capture out prompt
+  dir="$TMP_ROOT/nbsp-shell"; mkdir -p "$dir"
+  fb=$(make_fake_tmux "$dir")
+  capture="$dir/styled.txt"
+  # The false NEGATIVE fix must not open a false POSITIVE. A dead shell whose
+  # prompt is padded the same way stays unknown, so an escalation is never typed
+  # into a shell that could execute it.
+  for prompt in '>' '$' '%' '#'; do
+    printf '%s\xc2\xa0\n' "$prompt" > "$capture"
+    out=$(PATH="$fb:$PATH" FM_FAKE_STYLED="$capture" FM_FAKE_CY=0 \
+      fm_tmux_composer_state "fakepane")
+    [ "$out" = unknown ] \
+      || fail "a U+00A0-padded bare shell prompt '$prompt' must stay unknown, got '$out'"
+  done
+  pass "fm_tmux_composer_state: a U+00A0-padded bare shell prompt still reads unknown"
+}
+
+test_nbsp_padded_real_text_is_still_pending() {
+  local dir fb capture
+  dir="$TMP_ROOT/nbsp-real-text"; mkdir -p "$dir"
+  fb=$(make_fake_tmux "$dir")
+  capture="$dir/styled.txt"
+  # Normalizing blanks must never swallow real typed input that happens to carry
+  # them - the guard exists to keep a digest out of half-typed text.
+  printf '\xe2\x9d\xaf\xc2\xa0fix findings 1 and 3\xc2\xa0\n' > "$capture"
+  PATH="$fb:$PATH" FM_FAKE_STYLED="$capture" FM_FAKE_CY=0 \
+    fm_pane_input_pending "fakepane" \
+    || fail "U+00A0-padded real typed text was not detected as pending"
+  pass "fm_pane_input_pending: real typed text padded with U+00A0 is still pending"
+}
+
 test_real_text_with_trailing_ghost_is_pending() {
   local dir fb capture
   dir="$TMP_ROOT/mixed"; mkdir -p "$dir"
@@ -607,6 +688,10 @@ test_colored_text_with_2_payload_still_pending
 test_dark_truecolor_ghost_only_composer_is_not_pending
 test_dark_truecolor_bare_shell_prompt_is_unknown
 test_real_text_with_trailing_ghost_is_pending
+test_claude_nbsp_padded_composer_is_not_pending
+test_claude_nbsp_padded_composer_reads_empty
+test_nbsp_padded_bare_shell_prompt_is_still_unknown
+test_nbsp_padded_real_text_is_still_pending
 test_two_row_composer_reads_text_above_empty_cursor_row
 test_wrapped_composer_reads_all_content_rows
 test_bottom_border_cursor_reads_ghost_only_box_as_empty

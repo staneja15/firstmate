@@ -102,6 +102,17 @@ That keeps a tmux pane nested inside herdr on the tmux transport, matching the r
 Target detection uses `FM_SUPERVISOR_TARGET`, then `$TMUX_PANE`, then `"${HERDR_SESSION:-default}:${HERDR_PANE_ID}"` under herdr, then the legacy `firstmate:0` tmux fallback with a warning.
 Selecting any other supervisor backend, including `zellij`, `orca`, or `cmux`, refuses at daemon startup instead of trying tmux injection primitives against a non-tmux pane.
 
+## Standing away-mode refusal (config/afk-refuse)
+
+A home can durably refuse away mode, so an instruction to stay out of it survives without an agent remembering it.
+`config/afk-refuse` (local, gitignored, not inherited by secondmate homes) holds the refusal, and its non-blank lines are the reason.
+While it is present and non-blank, `bin/fm-afk-start.sh` exits 3 and `bin/fm-afk-launch.sh start` and `start-native` refuse, each printing the reason verbatim and changing no state, terminal, or flag.
+`stop` and `reconcile` are never gated, so a home that is already away can always be brought back, and normal per-wake supervision is unaffected either way.
+A missing or blank file means no refusal, so away mode is never disabled by an accident that names no reason.
+Remove the file to clear the refusal.
+
+This exists because a captain instruction not to enter away mode was recorded only in a backlog task body, which the `/afk` path never reads, and firstmate entered away mode against it.
+
 ## Away-mode wedge alarm channels (config/wedge-alarm)
 
 When away-mode injection wedges past `FM_MAX_DEFER_SECS`, the sub-supervisor raises a loud, rate-limited alarm.

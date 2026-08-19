@@ -36,6 +36,10 @@
 #   fm-afk-launch.sh reconcile Close a recorded-but-dead daemon terminal by exact
 #                              id and drop the record (recovery after a crash).
 #
+# `start` and `start-native` refuse, and change nothing, while this home holds a
+# standing away-mode refusal (a non-empty config/afk-refuse); `stop` and
+# `reconcile` always run, so an away home can always be brought back.
+#
 # Supported backends: herdr, tmux. Others (zellij, orca, cmux) have no verified
 # non-visible-launch primitive here yet and refuse loudly.
 #
@@ -124,7 +128,7 @@ fm_afk_launch_lock_release() {
 }
 
 fm_afk_launch_usage() {
-  sed -n '2,34p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,41p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 # The command run inside the created terminal. Real launch runs the shared
@@ -440,6 +444,10 @@ fm_afk_launch_create_tmux() {  # <captain-target> <captain-backend>
 
 fm_afk_launch_start() {
   local captain_target captain_backend backup artifact had_afk=0 result
+  # A standing refusal (config/afk-refuse) is a precondition of ENTRY, checked
+  # before anything is captured, created, or written. stop/reconcile are never
+  # gated, so a home that is already away can always be brought back.
+  fm_afk_refuse_if_standing || return 1
   if [ -e "$FM_AFK_LAUNCH_STATE/.afk-return-catchup" ]; then
     fm_afk_launch_log "return catch-up is still pending; run bin/fm-afk-return.sh check before re-entering away mode"
     return 1
@@ -509,6 +517,7 @@ fm_afk_launch_start() {
 
 fm_afk_launch_start_native() {
   local backup artifact had_afk=0 result=0
+  fm_afk_refuse_if_standing || return 1
   mkdir -p "$FM_AFK_LAUNCH_STATE" || return 1
   if [ -e "$FM_AFK_LAUNCH_STATE/.afk-return-catchup" ]; then
     fm_afk_launch_log "return catch-up is still pending; run bin/fm-afk-return.sh check before re-entering away mode"

@@ -189,6 +189,10 @@ ANSI capture preserves de-emphasized placeholder style.
 `bin/fm-composer-lib.sh` is the fleet-wide owner that strips dim or faint runs and dark truecolor placeholders while retaining bright typed input.
 If a future Herdr version strips ANSI style, ghost suggestions become pending rather than empty, which safely defers injection and eventually raises the wedge alarm.
 
+A harness may pad an otherwise-empty composer with a Unicode blank that POSIX `[[:space:]]` does not match, such as the U+00A0 that Claude Code 2.x places after its bare `❯`.
+`bin/fm-composer-lib.sh` normalizes those blanks to an ordinary space before it decides, so an idle composer is not read as unsubmitted text.
+This changes only what counts as visually blank; the dead-shell rule and the ghost-luminance ceiling are unchanged, so real typed input stays pending however it is padded.
+
 A bare shell prompt is never an empty agent composer.
 Away-mode injection proceeds only on an affirmative `empty` result, never on unknown.
 This prevents a dead agent pane from receiving and possibly executing an escalation as shell input.

@@ -23,6 +23,47 @@ fi
 
 TMP_ROOT=$(fm_test_tmproot fm-daemon-tests)
 
+# --- Standing away-mode refusal (task away-mode-composer-guard-blind-aw3) ---
+#
+# On 2026-08-18 firstmate entered away mode against a standing captain
+# instruction not to, because the instruction lived only in a backlog task body
+# that the /afk path never reads. These pin that a home CAN durably refuse, that
+# refusing changes nothing, and that the refusal cannot be a silent accident.
+
+test_afk_start_refuses_a_standing_refusal_before_mutating() {
+  local dir state config out status
+  dir=$(make_supercase afk-start-standing-refusal)
+  state="$dir/state"; config="$dir/config"; mkdir -p "$config"
+  printf 'Away mode stays off until the injection wedge is fixed.\n' > "$config/afk-refuse"
+
+  out=$(FM_STATE_OVERRIDE="$state" FM_CONFIG_OVERRIDE="$config" "$AFK_START" 2>&1)
+  status=$?
+
+  [ "$status" -eq 3 ] || fail "a standing refusal should exit 3, got $status"
+  assert_contains "$out" "REFUSED" "the refusal was not reported loudly"
+  assert_contains "$out" "Away mode stays off until the injection wedge is fixed." \
+    "the refusal did not name its reason"
+  assert_not_contains "$out" "starting supervise daemon" "a refused entry still started the daemon"
+  assert_absent "$state/.afk" "a refused entry still wrote the away-mode flag"
+  pass "fm-afk-start.sh refuses a standing away-mode refusal and mutates nothing"
+}
+
+test_afk_start_ignores_an_empty_refusal_file() {
+  local dir state config out
+  dir=$(make_supercase afk-start-empty-refusal)
+  state="$dir/state"; config="$dir/config"; mkdir -p "$config"
+  # A blank or whitespace-only file is not a refusal: away mode must never be
+  # disabled by an accident that names no reason.
+  printf '   \n\n' > "$config/afk-refuse"
+
+  out=$(FM_STATE_OVERRIDE="$state" FM_CONFIG_OVERRIDE="$config" \
+    FM_SUPERVISOR_BACKEND=unsupported "$AFK_START" 2>&1)
+
+  assert_not_contains "$out" "REFUSED" "a whitespace-only file was treated as a refusal"
+  assert_contains "$out" "starting supervise daemon" "entry did not proceed without a real refusal"
+  pass "fm-afk-start.sh treats a blank refusal file as no refusal"
+}
+
 test_afk_start_refuses_when_flag_cannot_be_written() {
   local dir state out status
   dir=$(make_supercase afk-start-flag-unwritable)
@@ -1765,6 +1806,8 @@ test_inject_msg_defers_on_unrecognized_composer_state() {
   pass "inject_msg: unrecognized composer states defer by default"
 }
 
+test_afk_start_refuses_a_standing_refusal_before_mutating
+test_afk_start_ignores_an_empty_refusal_file
 test_afk_start_refuses_when_flag_cannot_be_written
 test_afk_start_ignores_stale_pidfile_without_lock
 test_afk_start_reclaims_stale_daemon_lock_reused_pid

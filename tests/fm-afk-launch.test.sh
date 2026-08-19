@@ -41,6 +41,48 @@ GLOBAL_CLEANUP() {
 trap GLOBAL_CLEANUP EXIT
 
 # ---------------------------------------------------------------------------
+# UNIT 0: a standing away-mode refusal blocks ENTRY through this owner too, and
+# never blocks the way back out (task away-mode-composer-guard-blind-aw3).
+# Firstmate entered away mode on 2026-08-18 against a standing captain
+# instruction not to, because the instruction lived only in a backlog task body.
+# The refusal must be enforced wherever away mode can be entered, not only on
+# the entry an agent happens to remember.
+# ---------------------------------------------------------------------------
+unit_standing_refusal_blocks_entry_not_exit() {
+  local st out status cmd
+  st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-refuse.XXXXXX")
+  mkdir -p "$st/state" "$st/config"
+  printf 'Away mode stays off until the injection wedge is fixed.\n' > "$st/config/afk-refuse"
+
+  for cmd in start start-native; do
+    out=$(FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_CONFIG_OVERRIDE="$st/config" \
+      FM_AFK_LAUNCH_ENTRY="$SLEEPER" "$LAUNCH" "$cmd" 2>&1)
+    status=$?
+    if [ "$status" -eq 0 ]; then
+      fail "refusal: '$cmd' succeeded despite a standing refusal"
+    elif [ -e "$st/state/.afk" ]; then
+      fail "refusal: '$cmd' wrote the away-mode flag despite refusing"
+    elif [ -e "$st/state/.afk-daemon-terminal" ]; then
+      fail "refusal: '$cmd' recorded a daemon terminal despite refusing"
+    else
+      case "$out" in
+        *REFUSED*"injection wedge"*) pass "refusal: '$cmd' refuses loudly, names the reason, and mutates nothing" ;;
+        *) fail "refusal: '$cmd' did not report the refusal and its reason: $out" ;;
+      esac
+    fi
+  done
+
+  # The way OUT must never be gated: a home already away has to be recoverable.
+  if FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_CONFIG_OVERRIDE="$st/config" \
+       "$LAUNCH" stop >/dev/null 2>&1; then
+    pass "refusal: 'stop' still runs while a refusal stands"
+  else
+    fail "refusal: 'stop' was blocked by a standing refusal"
+  fi
+  rm -rf "$st"
+}
+
+# ---------------------------------------------------------------------------
 # UNIT 1: fm_afk_clear_stale_artifacts removes exactly the three stale artifacts.
 # ---------------------------------------------------------------------------
 unit_clear_stale() {
@@ -891,6 +933,7 @@ unit_clear_failure_aborts_entry
 unit_confirmed_absence_succeeds
 unit_incomplete_restore_retains_backup
 unit_flag_write_failure_aborts
+unit_standing_refusal_blocks_entry_not_exit
 e2e_herdr
 e2e_tmux
 

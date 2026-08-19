@@ -165,6 +165,7 @@ Real captures verified these active distinctions:
 - Dim or faint suggestion text is ghost content, while normally styled text is pending input.
 - Grok dark truecolor placeholders are ghost content, while bright truecolor typed input remains pending.
 - A bare shell prompt has no safe agent-composer container and is unknown.
+- Claude Code 2.x pads its bare `❯` composer with U+00A0, which is normalized to a space, so an idle composer reads empty while the same padding around real text still reads pending.
 
 `tests/fm-composer-ghost.test.sh`, `tests/fm-composer-lib.test.sh`, and the Herdr composer cases pin the exact captured ANSI bytes.
 The U+2063 operational and routed-request separators were exercised through a real Pi-on-Herdr path; the byte-exact active regression is:

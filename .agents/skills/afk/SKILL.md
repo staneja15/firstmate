@@ -18,6 +18,13 @@ batched digest rather than per-wake injections.
 
 ## What it does
 
+0. **Expect a standing refusal to stop you.**
+   A home can durably refuse away mode through `config/afk-refuse`; both entry paths below check it before touching any state and refuse with the reason printed verbatim.
+   Do not work around a refusal, and do not enter away mode by hand instead.
+   Relay the reason to the captain in `AGENTS.md` section 9 language and stay on normal per-wake supervision, which the refusal never affects.
+   Only the captain's explicit word clears it, by removing that file.
+   See [`docs/configuration.md`](../../../docs/configuration.md) "Standing away-mode refusal" for the exact contract.
+
 1. **Enter the lifecycle through `bin/fm-afk-launch.sh`.**
    This owns the durable state write, session-scoped stale-artifact clearing,
    terminal record, and rollback.
@@ -96,7 +103,7 @@ backend (tmux or herdr; see "Auto-discovered supervisor pane" below):
 - **Composer-state guard** - `inject_msg` reads the full `empty`/`pending`/`unknown` verdict from `fm_backend_composer_state` and injects only when it is affirmatively `empty`.
   `pending` means real unsubmitted text, while `unknown` includes an unreadable pane and a bare shell prompt left after the agent exits, so both defer.
   The shared `bin/fm-composer-lib.sh` owns the content decision after each backend captures and structurally identifies its own composer row.
-  It preserves idle bordered composers such as claude's `│ > … │` and bare agent glyphs as empty, but a bare shell glyph is unknown unless inside a genuine bordered composer box; see `docs/herdr-backend.md` "Composer and injection safety" for the complete contract.
+  It preserves idle bordered composers such as claude's `│ > … │` and bare agent glyphs as empty, normalizes invisible composer padding such as the U+00A0 Claude Code 2.x places after its bare `❯` so an idle composer is not read as typed text, but a bare shell glyph is unknown unless inside a genuine bordered composer box; see `docs/herdr-backend.md` "Composer and injection safety" for the complete contract.
   `pane_input_pending` remains the tested predicate for callers that only need to know whether real unsubmitted text is present, but it is insufficient for an injection-safety decision because it cannot distinguish `empty` from `unknown`.
 
 Either condition, or any composer verdict other than `empty`, defers the injection; the buffered escalation survives in `state/.subsuper-escalations` and is retried on the next housekeeping tick.

@@ -13,6 +13,14 @@
 #      agent composer either way, bordered or bare.
 #   4. Real unsubmitted text reads `pending`; a known idle placeholder reads
 #      `empty`.
+#
+# Task away-mode-composer-guard-blind-aw3 adds one more, without touching those:
+#   5. A composer holding only INVISIBLE blanks is visually empty and reads
+#      `empty`. Claude Code 2.x pads its bare `❯` with U+00A0, which POSIX
+#      [[:space:]] never matches, so every trim walked past it and an idle
+#      composer read `pending` on every backend - the away-mode injection wedge.
+#      The normalization decides nothing on its own; it only lets rules 1-4 see
+#      the row the way a human sees it.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -114,6 +122,69 @@ test_idle_placeholder_case_mode_is_explicit() {
   pass "fm_composer_classify_content: idle matching preserves the caller's case mode"
 }
 
+# --- Rule 5: invisible composer padding -------------------------------------
+
+test_nbsp_padded_agent_glyph_is_empty() {
+  local out blank glyph hex
+  glyph=$(printf '\xe2\x9d\xaf')
+  # U+00A0 first: the exact byte pair captured live from the wedged pane.
+  out=$(classify 0 "${glyph}$(printf '\xc2\xa0')")
+  [ "$out" = empty ] \
+    || fail "the live claude composer '❯'+U+00A0 must read empty, got '$out'"
+  # Then every blank this owner declares, so the set cannot grow untested.
+  for blank in "${FM_COMPOSER_BLANK_CHARS[@]}"; do
+    hex=$(printf '%s' "$blank" | od -An -tx1 | tr -d ' \n')
+    out=$(classify 0 "${glyph}${blank}")
+    [ "$out" = empty ] \
+      || fail "an agent glyph padded with blank 0x$hex must read empty, got '$out'"
+    out=$(classify 1 "$blank")
+    [ "$out" = empty ] \
+      || fail "a bordered composer holding only blank 0x$hex must read empty, got '$out'"
+  done
+  pass "fm_composer_classify_content: a composer padded with invisible blanks reads empty"
+}
+
+test_nbsp_padded_shell_glyph_keeps_its_safety_verdict() {
+  local out g
+  # The dead-shell rule is untouched: normalizing blanks must not turn a bare
+  # shell prompt into an injection target.
+  for g in '>' '$' '%' '#'; do
+    out=$(classify 0 "$(printf "%s\xc2\xa0" "$g")")
+    [ "$out" = unknown ] \
+      || fail "a U+00A0-padded bare shell glyph '$g' must stay unknown, got '$out'"
+    out=$(classify 0 '' '' sensitive "$(printf "%s\xc2\xa0" "$g")")
+    [ "$out" = unknown ] \
+      || fail "a U+00A0-padded stripped shell glyph '$g' must stay unknown, got '$out'"
+  done
+  pass "fm_composer_classify_content: blank normalization leaves the dead-shell rule intact"
+}
+
+test_blank_padded_real_text_is_still_pending() {
+  local out
+  # The guard's whole purpose - never merge a digest into half-typed input -
+  # must survive whatever padding surrounds the text.
+  out=$(classify 0 "$(printf '\xe2\x9d\xaf\xc2\xa0fix findings 1 and 3')")
+  [ "$out" = pending ] || fail "U+00A0-padded typed text must stay pending, got '$out'"
+  out=$(classify 1 "$(printf '\xe3\x80\x80deploy staging\xc2\xa0')")
+  [ "$out" = pending ] || fail "blank-padded bordered text must stay pending, got '$out'"
+  out=$(classify 0 "$(printf '\xc2\xa0\xc2\xa0')" '' sensitive "$(printf '\xc2\xa0\xc2\xa0')")
+  [ "$out" = empty ] || fail "a row of nothing but blanks must read empty, got '$out'"
+  pass "fm_composer_classify_content: blank-padded real text is still pending"
+}
+
+test_normalize_blanks_leaves_visible_text_alone() {
+  local out
+  out=$(fm_composer_normalize_blanks 'plain ascii text')
+  [ "$out" = 'plain ascii text' ] || fail "normalization altered plain ASCII: '$out'"
+  # A multibyte glyph that is NOT a blank must survive byte-for-byte.
+  out=$(fm_composer_normalize_blanks "$(printf '\xe2\x9d\xaf')")
+  [ "$out" = "$(printf '\xe2\x9d\xaf')" ] || fail "normalization damaged the '❯' glyph"
+  out=$(fm_composer_normalize_blanks "$(printf 'caf\xc3\xa9 \xe6\x97\xa5\xe6\x9c\xac')")
+  [ "$out" = "$(printf 'caf\xc3\xa9 \xe6\x97\xa5\xe6\x9c\xac')" ] \
+    || fail "normalization damaged accented or CJK text: '$out'"
+  pass "fm_composer_normalize_blanks: visible text, including multibyte, is untouched"
+}
+
 # --- Real text is pending ---------------------------------------------------
 
 test_real_text_is_pending() {
@@ -134,3 +205,7 @@ test_empty_content_is_empty
 test_idle_placeholder_is_empty
 test_idle_placeholder_case_mode_is_explicit
 test_real_text_is_pending
+test_nbsp_padded_agent_glyph_is_empty
+test_nbsp_padded_shell_glyph_keeps_its_safety_verdict
+test_blank_padded_real_text_is_still_pending
+test_normalize_blanks_leaves_visible_text_alone

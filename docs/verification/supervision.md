@@ -129,6 +129,28 @@ tests/fm-claude-stop-autoarm.test.sh
 tests/fm-turnend-guard.test.sh
 ```
 
+## Away-mode composer guard on a real Claude Code pane
+
+This pass ran on 2026-08-19 against a real idle Claude Code 2.x composer, on both ANSI-capable supervisor backends, to establish what the guard actually sees rather than what a captured description says.
+
+The composer row is a bare U+276F glyph between two horizontal rules, and its padding is U+00A0, which POSIX `[[:space:]]` does not match.
+The row's own styling differs by capture path and is not the signal: herdr's ANSI pane read returned it unstyled, while `tmux capture-pane -e` returned it as a 256-colour foreground.
+Both are kept by `fm_composer_strip_ghost` by design, so `FM_COMPOSER_GHOST_LUMA_MAX` is not involved in this verdict.
+
+Captured bytes, identical on both backends apart from a trailing space herdr preserves and tmux trims:
+
+```
+342 235 257 302 240      # U+276F U+00A0
+```
+
+Observed guarantees, comparing the pre-change tree with the current one:
+
+- The composer verdict moved from `pending` to `empty` on herdr and on tmux alike, so both adapters carried the same blind spot and neither was covered by an existing override.
+- End to end on tmux, against a real Claude Code pane on a private socket: driving `inject_msg` from the pre-change tree deferred and the pane started zero turns, while driving it from the current tree delivered and the digest arrived as one submitted turn carrying the U+2063 `FIRSTMATE_OP:` envelope.
+- The herdr side of this pass is a read-only verdict comparison against an existing pane, not a pane-lifecycle exercise; `tests/fm-afk-inject-herdr-e2e.test.sh` remains the herdr injection regression.
+
+`tests/fm-composer-lib.test.sh`, `tests/fm-composer-ghost.test.sh`, and `tests/fm-backend-herdr.test.sh` pin those captured bytes, and each also pins that a bare shell prompt padded the same way still reads `unknown` and that padded real text still reads `pending`.
+
 ## Wedge-alarm channels
 
 The two real notification channels were bounded manually on 2026-07-10 on macOS 26.5.2 with Herdr 0.7.3.

@@ -17,4 +17,5 @@ config/calm
 config/x-mode.env
 config/cmux-socket-password
 config/wedge-alarm
+config/afk-refuse
 config/herdr-presentation-spaces
