@@ -15,9 +15,21 @@ fi
 command -v codex >/dev/null 2>&1 || fail "codex not found"
 
 TMP_ROOT=$(fm_test_tmproot fm-codex-sessionstart-sandbox-live)
-HOME_DIR="$TMP_ROOT/home"
-STATE="$HOME_DIR/state"
-mkdir -p "$STATE"
+PRIMARY="$TMP_ROOT/primary"
+FM_TEST_CODEX_HOME="$TMP_ROOT/codex-home"
+STATE="$PRIMARY/state"
+mkdir -p "$FM_TEST_CODEX_HOME" "$PRIMARY/bin" "$PRIMARY/.codex" "$PRIMARY/data" "$PRIMARY/config" "$STATE"
+fm_git_identity fmtest fmtest@example.invalid
+git init -q "$PRIMARY"
+git -C "$PRIMARY" commit -q --allow-empty -m init
+: > "$PRIMARY/AGENTS.md"
+cp -R "$ROOT/bin/." "$PRIMARY/bin/"
+cp "$ROOT/.codex/hooks.json" "$PRIMARY/.codex/hooks.json"
+git -C "$PRIMARY" add AGENTS.md bin .codex/hooks.json
+git -C "$PRIMARY" commit -q -m fixture
+CODEX_AUTH_SOURCE="${CODEX_HOME:-$HOME/.codex}/auth.json"
+[ -f "$CODEX_AUTH_SOURCE" ] || fail "Codex auth file not found for live approval_policy=never regression"
+ln -s "$CODEX_AUTH_SOURCE" "$FM_TEST_CODEX_HOME/auth.json"
 
 # shellcheck source=bin/fm-session-lock-lib.sh
 . "$ROOT/bin/fm-session-lock-lib.sh"
@@ -45,12 +57,26 @@ pid_one_second=$(codex sandbox -- bash -lc 'ps -o lstart=,comm=,args= -p 1') \
 [ "$pid_one_first" != "$pid_one_second" ] \
   || fail "separate Codex sandbox calls unexpectedly reused one PID 1 process lifetime"
 
-host_out=$(FM_STATE_OVERRIDE="$STATE" "$ROOT/bin/fm-lock.sh") \
-  || fail "host-level official lock attempt failed"
-[ "$host_out" = "lock acquired: harness pid $host_pid" ] \
-  || fail "host-level official lock returned unexpected output: $host_out"
-[ "$(cat "$STATE/.lock")" = "$host_pid" ] \
-  || fail "official lock did not record the long-lived host Codex pid"
+host_out=$(CODEX_HOME="$FM_TEST_CODEX_HOME" FM_SESSION_START_BACKLOG_LIMIT=1 codex \
+  -a never \
+  -s workspace-write \
+  --dangerously-bypass-hook-trust \
+  -C "$PRIMARY" \
+  exec \
+  --ephemeral \
+  'Reply with exactly CODEX_SESSIONSTART_PROBE_DONE.' 2>&1) \
+  || fail "approval_policy=never SessionStart hook failed"
+[ -n "$host_out" ] || fail "approval_policy=never Codex session returned no output"
+assert_contains "$host_out" 'approval: never' \
+  "live Codex session did not use approval_policy=never"
+assert_present "$STATE/.lock" \
+  "approval_policy=never SessionStart hook did not run the official lock"
+lock_pid=$(cat "$STATE/.lock")
+case "$lock_pid" in
+  ''|*[!0-9]*|1) fail "official lock recorded an invalid Codex pid: $lock_pid" ;;
+esac
+[ "$lock_pid" != "$host_pid" ] \
+  || fail "official lock recorded the outer harness instead of the no-approval Codex session"
 
-printf 'ok - %s live PID-namespace reproduction rejected two transient sandbox owners and the host boundary recorded Codex pid %s\n' \
-  "$(codex --version)" "$host_pid"
+printf 'ok - %s live PID-namespace reproduction rejected two transient sandbox owners and approval_policy=never SessionStart recorded a non-PID-1 Codex process\n' \
+  "$(codex --version)"

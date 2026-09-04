@@ -30,9 +30,31 @@ make_primary() {
 install_nudge_fixture() {
   local root=$1
   make_primary "$root"
-  cp "$ROOT/bin/fm-sessionstart-nudge.sh" "$ROOT/bin/fm-primary-scope-lib.sh" \
+  cp "$ROOT/bin/fm-codex-sessionstart-hook.sh" "$ROOT/bin/fm-sessionstart-nudge.sh" \
+    "$ROOT/bin/fm-primary-scope-lib.sh" \
     "$ROOT/bin/fm-gate-refuse-lib.sh" "$ROOT/bin/fm-operational-input.sh" "$root/bin/"
-  chmod +x "$root/bin/fm-sessionstart-nudge.sh"
+  chmod +x "$root/bin/fm-codex-sessionstart-hook.sh" "$root/bin/fm-sessionstart-nudge.sh"
+}
+
+install_codex_hook_fixture() {
+  local root=$1
+  install_nudge_fixture "$root"
+  mkdir -p "$root/.codex"
+  cp "$ROOT/.codex/hooks.json" "$root/.codex/hooks.json"
+  cat > "$root/bin/fm-session-start.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'host session start\n'
+printf 'ran\n' > "$FM_HOME/session-start-ran"
+SH
+  chmod +x "$root/bin/fm-session-start.sh"
+}
+
+run_codex_hook() {
+  local root=$1 permission_mode=$2 command payload
+  command=$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$root/.codex/hooks.json")
+  payload=$(jq -cn --arg mode "$permission_mode" \
+    '{hook_event_name:"SessionStart",source:"startup",permission_mode:$mode}')
+  (cd "$root" && printf '%s' "$payload" | FM_HOME="$root" bash -c "$command")
 }
 
 run_nudge() {
@@ -138,19 +160,49 @@ test_owned_lock_is_silent() {
   pass "fm-sessionstart-nudge: a lock holder in process ancestry silences both output variants"
 }
 
-test_codex_hook_delivers_exact_host_boundary_nudge() {
-  local root="$TMP_ROOT/codex-hook-primary" command out prefix_hex status=0
-  install_nudge_fixture "$root"
-  mkdir -p "$root/.codex"
-  cp "$ROOT/.codex/hooks.json" "$root/.codex/hooks.json"
-  command=$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$root/.codex/hooks.json")
-  out=$(cd "$root" && printf '%s' \
-    '{"hook_event_name":"SessionStart","source":"startup"}' | bash -c "$command") || status=$?
-  expect_code 0 "$status" "Codex hook exact nudge delivery"
-  [ "$out" = "$CODEX_NUDGE_LINE" ] || fail "Codex hook printed unexpected output: $out"
-  prefix_hex=$(printf '%s' "$out" | head -c 3 | od -An -tx1 | tr -d ' \n')
-  [ "$prefix_hex" = e281a3 ] || fail "Codex hook output lost its U+2063 operational marker: $prefix_hex"
-  pass "Codex SessionStart hook delivers the exact marked host-boundary nudge"
+test_codex_default_hook_runs_session_start_on_host() {
+  local root="$TMP_ROOT/codex-default-primary" out status=0
+  install_codex_hook_fixture "$root"
+  out=$(run_codex_hook "$root" default) || status=$?
+  expect_code 0 "$status" "Codex default host session start"
+  [ "$out" = 'host session start' ] || fail "Codex default hook printed unexpected output: $out"
+  assert_grep 'ran' "$root/session-start-ran" \
+    "Codex default hook did not invoke the official session-start path"
+  pass "Codex default SessionStart invokes session start in the trusted hook"
+}
+
+test_codex_dontask_hook_runs_session_start_on_host() {
+  local root="$TMP_ROOT/codex-dontask-primary" out status=0
+  install_codex_hook_fixture "$root"
+  out=$(run_codex_hook "$root" dontAsk) || status=$?
+  expect_code 0 "$status" "Codex dontAsk host session start"
+  [ "$out" = 'host session start' ] || fail "Codex dontAsk hook printed unexpected output: $out"
+  assert_grep 'ran' "$root/session-start-ran" \
+    "Codex dontAsk hook did not invoke the official session-start path"
+  pass "Codex dontAsk SessionStart invokes session start in the trusted hook"
+}
+
+test_codex_unrestricted_hook_runs_normal_session_start() {
+  local root="$TMP_ROOT/codex-unrestricted-primary" out status=0
+  install_codex_hook_fixture "$root"
+  out=$(run_codex_hook "$root" bypassPermissions) || status=$?
+  expect_code 0 "$status" "Codex unrestricted host session start"
+  [ "$out" = 'host session start' ] || fail "Codex unrestricted hook printed unexpected output: $out"
+  assert_grep 'ran' "$root/session-start-ran" \
+    "Codex unrestricted hook did not invoke the normal session-start path"
+  pass "Codex unrestricted SessionStart preserves the normal startup command"
+}
+
+test_codex_dontask_hook_preserves_owned_lock_silence() {
+  local root="$TMP_ROOT/codex-dontask-owned" out status=0
+  install_codex_hook_fixture "$root"
+  printf '%s\n' "$$" > "$root/state/.lock"
+  out=$(run_codex_hook "$root" dontAsk) || status=$?
+  expect_code 0 "$status" "Codex dontAsk owned-lock hook"
+  [ -z "$out" ] || fail "Codex dontAsk owned-lock hook printed output: $out"
+  assert_absent "$root/session-start-ran" \
+    "Codex dontAsk hook reran session start after verified lock ownership"
+  pass "Codex dontAsk SessionStart preserves already-owned-lock silence"
 }
 
 test_opencode_plugin_delivers_exact_nudge_once() {
@@ -271,7 +323,10 @@ test_unmarked_linked_worktree_is_silent
 test_linked_secondmate_primary_nudges
 test_missing_state_is_silent
 test_owned_lock_is_silent
-test_codex_hook_delivers_exact_host_boundary_nudge
+test_codex_default_hook_runs_session_start_on_host
+test_codex_dontask_hook_runs_session_start_on_host
+test_codex_unrestricted_hook_runs_normal_session_start
+test_codex_dontask_hook_preserves_owned_lock_silence
 test_opencode_plugin_delivers_exact_nudge_once
 test_claude_hook_delivers_exact_non_codex_nudge
 test_grok_hook_delivers_exact_non_codex_nudge

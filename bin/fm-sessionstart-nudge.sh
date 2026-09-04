@@ -2,9 +2,8 @@
 # Print the one-line session-start instruction only for a genuine firstmate
 # primary whose current harness session has not already acquired the home lock.
 # Usage: fm-sessionstart-nudge.sh [--codex]
-# The Codex adapter passes --codex so a managed/restricted primary runs the one
-# required session-start command outside its per-command PID namespace while an
-# already-unsandboxed Codex primary keeps the normal command path.
+# The Codex hook transport passes --codex as its scope and idempotence check
+# before running session start directly at the host hook.
 # Every silence and error path exits 0 because Claude SessionStart exit 2 blocks
 # session initialization.
 set -u

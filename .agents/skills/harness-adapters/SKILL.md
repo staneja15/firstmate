@@ -81,12 +81,12 @@ The subagent tool presents to the model as `Agent`, and on Claude Code 2.1.217 b
 
 AGENTS.md section 3 remains the behavioral owner for session start, while tracked native adapters invoke `bin/fm-sessionstart-nudge.sh` as an idempotent enforcement layer.
 The wrapper prints one canonically typed `session-start` instruction to run `bin/fm-session-start.sh`; it never runs the digest, wake drain, bootstrap sweeps, lock, or supervision arm itself.
-The Codex hook selects the wrapper's `--codex` output; `docs/sessionstart-nudge.md` owns its managed/restricted host-execution boundary and its unchanged disabled/unrestricted path.
+The Codex hook runs the one official invocation directly at the host boundary for every mode after the wrapper's `--codex` scope check; `docs/sessionstart-nudge.md` owns that boundary and the unchanged unrestricted command path.
 Full mechanics, scoping, and fail-open behavior live in `docs/sessionstart-nudge.md`.
 `docs/verification/supervision.md` "Native session-start delivery" owns active dated commands, payloads, and evidence.
 
 - `claude`: verified native `SessionStart` stdout injection; `.claude/settings.json` matches `startup`, `resume`, and `clear`, but not `compact`.
-- `codex`: native stdout delivery verified on 0.144.4; the PID-namespace boundary and unchanged host lock path were verified on 0.153.2, and `.codex/hooks.json` receives `source=startup` before selecting the Codex output.
+- `codex`: native stdout delivery verified on 0.144.4; the `approval_policy=never` PID-namespace boundary and unchanged official lock path were verified on 0.153.2, and `.codex/hooks.json` receives `source=startup` before running the official command.
 - `opencode`: verified on 1.17.18; `session.created` plus `client.session.promptAsync` starts the nudge turn in the TUI, while `opencode run` remains fail-open headless.
 - `pi`: verified native `session_start`; the existing primary extension handles `startup`, `new`, and `resume` and uses `pi.sendMessage` to inject context without racing a positional launch prompt.
 - `grok`: the 0.2.103 project `SessionStart` event fires with `source=new`, but stdout does not reach model context; the tracked project hook remains fail-open, and a global token-guarded fallback requires a captain decision.
