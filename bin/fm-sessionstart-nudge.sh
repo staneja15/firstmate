@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Print the one-line session-start instruction only for a genuine firstmate
 # primary whose current harness session has not already acquired the home lock.
+# Usage: fm-sessionstart-nudge.sh [--codex]
+# The Codex adapter passes --codex so a managed/restricted primary runs the one
+# required session-start command outside its per-command PID namespace while an
+# already-unsandboxed Codex primary keeps the normal command path.
 # Every silence and error path exits 0 because Claude SessionStart exit 2 blocks
 # session initialization.
 set -u
@@ -37,9 +41,17 @@ lock_is_in_ancestry() {
 }
 
 lock_is_in_ancestry && exit 0
+nudge_body="Run \`bin/fm-session-start.sh\` now, exactly once, before executing any other instructions."
+case "${1:-}" in
+  '') ;;
+  --codex)
+    nudge_body="Run \`bin/fm-session-start.sh\` now, exactly once, before executing any other instructions; in a managed/restricted Codex permission profile, make that shell tool call with \`sandbox_permissions\` set to \`require_escalated\` and a concise justification so it executes outside the per-command PID namespace, while a disabled/unrestricted profile runs it normally."
+    ;;
+  *) exit 0 ;;
+esac
 nudge=
 fm_operational_input_encode session-start \
-  "Run \`bin/fm-session-start.sh\` now, exactly once, before executing any other instructions." \
+  "$nudge_body" \
   nudge || exit 0
 printf '%s\n' "$nudge"
 exit 0

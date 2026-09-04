@@ -8,6 +8,57 @@ Task-specific chronology, temporary paths, run identifiers, and delivery transcr
 
 ## Native session-start delivery
 
+### Codex PID-namespace startup boundary
+
+The boundary was reproduced on 2026-09-04 with Codex CLI 0.153.2 on Linux.
+
+- Initiating trigger: the native `SessionStart` hook injected its normal instruction, and the primary obeyed it with an ordinary shell tool call.
+- Masking condition: a managed/restricted Codex permission profile placed that call beneath a namespace-local PID 1, while a disabled/unrestricted call exposed the long-lived host Codex process in ancestry.
+- Visible symptom: `bin/fm-session-start.sh` printed `error: cannot locate harness process in ancestry`, entered the read-only digest path, and skipped every fleet mutation.
+
+The smallest counterfactual kept the command and official lock code unchanged and changed only the execution boundary.
+These were the reproduction commands run from the Firstmate checkout beneath a live Codex primary:
+
+```sh
+codex --version
+codex sandbox -- bash -lc 'printf "inner self=%s\n" "$$"; ps -o pid=,ppid=,lstart=,comm=,args= -p $$ -p 1'
+repro_state=$(mktemp -d "$PWD/.repro-lock.XXXXXX")
+FM_STATE_OVERRIDE="$repro_state" codex sandbox -- bash -lc 'FM_STATE_OVERRIDE="$1" bin/fm-lock.sh' _ "$repro_state"
+FM_STATE_OVERRIDE="$repro_state" bin/fm-lock.sh
+```
+
+The exact relevant output was:
+
+```text
+codex-cli 0.153.2
+1 0 Fri Sep  4 10:46:17 2026 codex codex-linux-sandbox ...
+2 1 Fri Sep  4 10:46:17 2026 bash bash -lc ...
+error: cannot locate harness process in ancestry
+lock acquired: harness pid 203727
+```
+
+Two separate `codex sandbox` calls reported namespace-local PID 1 start times of `Fri Sep 4 10:46:54 2026` and `Fri Sep 4 10:46:55 2026`.
+That disconfirms treating namespace-local PID 1 as durable lock ownership.
+The host-bound counterfactual recorded PID 203727, the same long-lived Codex process visible in the caller's host ancestry.
+
+The shipped Codex hook now produces this exact marked line:
+
+```text
+⁣FIRSTMATE_OP: v1 session-start: Run `bin/fm-session-start.sh` now, exactly once, before executing any other instructions; in a managed/restricted Codex permission profile, make that shell tool call with `sandbox_permissions` set to `require_escalated` and a concise justification so it executes outside the per-command PID namespace, while a disabled/unrestricted profile runs it normally.
+```
+
+The official lock implementation is unchanged, including its competing-session refusal and its rejection of namespace-local PID 1.
+The supported-axis review found that Claude, OpenCode, Pi, and Grok still invoke the wrapper without `--codex` and retain their exact prior output.
+Kimi has no tracked native session-start transport, so this hook-only change does not affect it.
+The tmux, Herdr, Zellij, Orca, and cmux runtime backends are below the primary session-start transport boundary and require no adapter change.
+
+Current deterministic and live entry points for this boundary are:
+
+```sh
+tests/fm-sessionstart-nudge.test.sh
+FM_CODEX_SESSIONSTART_SANDBOX_LIVE_E2E=1 tests/fm-codex-sessionstart-sandbox-live-e2e.test.sh
+```
+
 The cross-harness transport pass ran on 2026-07-17 with Codex 0.144.4, Grok 0.2.103, OpenCode 1.17.18, Pi 0.80.10, and the tracked Claude hook wiring.
 
 Codex command shape:

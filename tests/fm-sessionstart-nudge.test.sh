@@ -12,8 +12,11 @@ NUDGE="$ROOT/bin/fm-sessionstart-nudge.sh"
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-operational-input.sh"
 NUDGE_TEXT="Run \`bin/fm-session-start.sh\` now, exactly once, before executing any other instructions."
+CODEX_NUDGE_TEXT="Run \`bin/fm-session-start.sh\` now, exactly once, before executing any other instructions; in a managed/restricted Codex permission profile, make that shell tool call with \`sandbox_permissions\` set to \`require_escalated\` and a concise justification so it executes outside the per-command PID namespace, while a disabled/unrestricted profile runs it normally."
 fm_operational_input_encode session-start "$NUDGE_TEXT" NUDGE_LINE \
   || fail "could not construct expected session-start nudge"
+fm_operational_input_encode session-start "$CODEX_NUDGE_TEXT" CODEX_NUDGE_LINE \
+  || fail "could not construct expected Codex session-start nudge"
 fm_git_identity fmtest fmtest@example.invalid
 
 make_primary() {
@@ -26,7 +29,8 @@ make_primary() {
 
 run_nudge() {
   local root=$1
-  FM_GATE_REFUSE_BYPASS=0 FM_ROOT_OVERRIDE="$root" FM_HOME="$root" "$NUDGE"
+  shift
+  FM_GATE_REFUSE_BYPASS=0 FM_ROOT_OVERRIDE="$root" FM_HOME="$root" "$NUDGE" "$@"
 }
 
 expect_silent_zero() {
@@ -47,6 +51,22 @@ test_genuine_primary_nudges() {
   prefix_hex=$(printf '%s' "$out" | head -c 3 | od -An -tx1 | tr -d ' \n')
   [ "$prefix_hex" = e281a3 ] || fail "genuine primary nudge lost its U+2063 operational marker: $prefix_hex"
   pass "fm-sessionstart-nudge: a genuine primary gets one explicitly marked instruction line"
+}
+
+test_codex_primary_nudges_outside_managed_pid_namespace() {
+  local root="$TMP_ROOT/codex-primary" out prefix_hex status=0
+  make_primary "$root"
+  out=$(run_nudge "$root" --codex) || status=$?
+  expect_code 0 "$status" "Codex primary nudge"
+  [ "$out" = "$CODEX_NUDGE_LINE" ] || fail "Codex primary printed unexpected output: $out"
+  prefix_hex=$(printf '%s' "$out" | head -c 3 | od -An -tx1 | tr -d ' \n')
+  [ "$prefix_hex" = e281a3 ] || fail "Codex primary nudge lost its U+2063 operational marker: $prefix_hex"
+  # shellcheck disable=SC2016 # Backticks are literal prompt markup.
+  assert_contains "$out" 'sandbox_permissions` set to `require_escalated' \
+    "Codex primary nudge does not require the managed shell call to leave the PID namespace"
+  assert_contains "$out" 'disabled/unrestricted profile runs it normally' \
+    "Codex primary nudge changed the already-unsandboxed command path"
+  pass "fm-sessionstart-nudge: Codex gets the exact marked host-boundary instruction"
 }
 
 test_gate_env_is_silent() {
@@ -106,7 +126,26 @@ test_owned_lock_is_silent() {
   make_primary "$root"
   printf '%s\n' "$$" > "$root/state/.lock"
   expect_silent_zero "owned lock nudge" run_nudge "$root"
-  pass "fm-sessionstart-nudge: a lock holder in process ancestry is already run"
+  expect_silent_zero "owned Codex lock nudge" run_nudge "$root" --codex
+  pass "fm-sessionstart-nudge: a lock holder in process ancestry silences both output variants"
+}
+
+test_codex_hook_delivers_exact_host_boundary_nudge() {
+  local root="$TMP_ROOT/codex-hook-primary" command out prefix_hex status=0
+  make_primary "$root"
+  mkdir -p "$root/.codex"
+  cp "$ROOT/bin/fm-sessionstart-nudge.sh" "$ROOT/bin/fm-primary-scope-lib.sh" \
+    "$ROOT/bin/fm-gate-refuse-lib.sh" "$ROOT/bin/fm-operational-input.sh" "$root/bin/"
+  cp "$ROOT/.codex/hooks.json" "$root/.codex/hooks.json"
+  chmod +x "$root/bin/fm-sessionstart-nudge.sh"
+  command=$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$root/.codex/hooks.json")
+  out=$(cd "$root" && printf '%s' \
+    '{"hook_event_name":"SessionStart","source":"startup"}' | bash -c "$command") || status=$?
+  expect_code 0 "$status" "Codex hook exact nudge delivery"
+  [ "$out" = "$CODEX_NUDGE_LINE" ] || fail "Codex hook printed unexpected output: $out"
+  prefix_hex=$(printf '%s' "$out" | head -c 3 | od -An -tx1 | tr -d ' \n')
+  [ "$prefix_hex" = e281a3 ] || fail "Codex hook output lost its U+2063 operational marker: $prefix_hex"
+  pass "Codex SessionStart hook delivers the exact marked host-boundary nudge"
 }
 
 test_opencode_plugin_delivers_exact_nudge_once() {
@@ -162,7 +201,8 @@ test_tracked_harness_registration() {
   assert_contains "$command" 'payload=$(cat' "Codex SessionStart hook does not read its payload"
   # shellcheck disable=SC2016
   assert_contains "$command" 'root=$(pwd -P)' "Codex SessionStart hook is not pwd-anchored"
-  assert_contains "$command" 'fm-sessionstart-nudge.sh' "Codex SessionStart hook does not invoke the wrapper"
+  assert_contains "$command" 'fm-sessionstart-nudge.sh" --codex' \
+    "Codex SessionStart hook does not select the Codex-specific startup boundary"
 
   command=$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$ROOT/.grok/hooks/fm-primary-sessionstart-nudge.json")
   # shellcheck disable=SC2016
@@ -170,6 +210,7 @@ test_tracked_harness_registration() {
   # shellcheck disable=SC2016
   assert_not_contains "$command" '${GROK_WORKSPACE_ROOT}' "Grok SessionStart hook contains a bare variable expansion"
   assert_contains "$command" 'fm-sessionstart-nudge.sh' "Grok SessionStart hook does not invoke the wrapper"
+  assert_not_contains "$command" '--codex' "Grok SessionStart hook changed to the Codex output variant"
 
   pi_plugin=$(cat "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts")
   assert_contains "$pi_plugin" '["startup", "new", "resume"]' "Pi SessionStart handler has the wrong reason allowlist"
@@ -177,21 +218,28 @@ test_tracked_harness_registration() {
   assert_contains "$pi_plugin" 'firstmate-sessionstart-nudge' "Pi SessionStart handler does not inject a custom context message"
   assert_contains "$pi_plugin" 'details: { kind: "session-start" }' "Pi SessionStart context does not retain its exact structured kind"
   assert_contains "$pi_plugin" 'pi.sendMessage' "Pi SessionStart handler does not use the context-safe message API"
+  assert_not_contains "$pi_plugin" '--codex' "Pi SessionStart handler changed to the Codex output variant"
 
   opencode_plugin=$(cat "$ROOT/.opencode/plugins/fm-primary-sessionstart-nudge.js")
   assert_contains "$opencode_plugin" 'session.created' "OpenCode plugin does not listen for session.created"
   assert_contains "$opencode_plugin" 'fm-sessionstart-nudge.sh' "OpenCode plugin does not invoke the wrapper"
   assert_contains "$opencode_plugin" 'promptAsync' "OpenCode plugin does not prompt the nudge turn"
+  assert_not_contains "$opencode_plugin" '--codex' "OpenCode session-start plugin changed to the Codex output variant"
+
+  command=$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$ROOT/.claude/settings.json")
+  assert_not_contains "$command" '--codex' "Claude SessionStart hook changed to the Codex output variant"
 
   pass "all five verified harnesses register the shared session-start nudge"
 }
 
 test_genuine_primary_nudges
+test_codex_primary_nudges_outside_managed_pid_namespace
 test_gate_env_is_silent
 test_gate_common_dir_is_silent
 test_unmarked_linked_worktree_is_silent
 test_linked_secondmate_primary_nudges
 test_missing_state_is_silent
 test_owned_lock_is_silent
+test_codex_hook_delivers_exact_host_boundary_nudge
 test_opencode_plugin_delivers_exact_nudge_once
 test_tracked_harness_registration

@@ -2,12 +2,15 @@
 
 AGENTS.md section 3 is the authoritative behavioral contract for session start.
 The tracked native adapters inject one instruction and never run the digest, acquire the lock, perform bootstrap work, drain notifications, or arm supervision themselves.
-The payload starts with U+2063 and the stable `FIRSTMATE_OP: ` label, carries the current `session-start` protocol kind, and retains exactly ``Run `bin/fm-session-start.sh` now, exactly once, before executing any other instructions.`` as its body.
+Every payload starts with U+2063 and the stable `FIRSTMATE_OP: ` label and carries the current `session-start` protocol kind.
+The non-Codex payload retains exactly ``Run `bin/fm-session-start.sh` now, exactly once, before executing any other instructions.`` as its body.
+The Codex transport selects a second body that preserves the one-command rule and adds the shell boundary required below.
 The Ahoy skill owns the rule that this marked operational input is never a captain-authored session boundary, including its narrow legacy compatibility cases.
 
 ## Shared wrapper and safety
 
 `bin/fm-sessionstart-nudge.sh` is the single command every harness adapter invokes.
+The Codex adapter invokes it with `--codex`; every other adapter invokes it with no argument and retains the original output byte-for-byte.
 It sources `bin/fm-gate-refuse-lib.sh` and stays silent for a no-mistakes gate agent identified by `NO_MISTAKES_GATE` or a `.no-mistakes/repos/*.git` git-common-dir.
 It shares `bin/fm-primary-scope-lib.sh` with `bin/fm-turnend-guard.sh`, so the hooks use one primary-detection owner.
 The Shared Predicate section of [`turnend-guard.md`](turnend-guard.md#shared-predicate) owns marker validation, plain-checkout detection, and required Firstmate-shaped paths.
@@ -16,12 +19,18 @@ Before printing, the wrapper reads `state/.lock` and walks at most eight parents
 If the lock names a live pid in that ancestry, session start already ran in this harness session and the wrapper stays silent.
 Every path exits 0, including malformed state and adapter errors, because a Claude SessionStart exit 2 blocks session initialization.
 
+Codex can execute ordinary shell tool calls inside a per-command PID namespace whose local PID 1 is the transient `codex-linux-sandbox` launcher.
+In that mode the official lock cannot see the long-lived host Codex ancestor, so the `--codex` output requires the one `bin/fm-session-start.sh` shell call to set `sandbox_permissions` to `require_escalated` with a concise justification.
+That call leaves the command PID namespace and lets the unchanged official lock verify and record the host Codex process.
+When Codex reports a disabled/unrestricted permission profile, the same instruction says to run the command normally, preserving the already-unsandboxed path.
+The hook still only injects context and never acquires the lock or runs session start itself.
+
 ## Harness transports
 
 | Harness | Tracked transport | Current compatibility |
 | --- | --- | --- |
 | Claude | `.claude/settings.json` registers `SessionStart` for `startup`, `resume`, and `clear`, excludes `compact`, and invokes the wrapper through `CLAUDE_PROJECT_DIR`. | Native stdout context injection is supported. |
-| Codex | `.codex/hooks.json` anchors to the hook process working directory, verifies a Firstmate-shaped hook-bearing root, and executes the wrapper. | Native stdout context injection is supported. |
+| Codex | `.codex/hooks.json` anchors to the hook process working directory, verifies a Firstmate-shaped hook-bearing root, and executes the wrapper with `--codex`. | Native stdout context injection is supported, and managed/restricted sessions receive the explicit host-execution boundary while disabled/unrestricted sessions retain normal execution. |
 | OpenCode | `.opencode/plugins/fm-primary-sessionstart-nudge.js` listens for `session.created`, runs once per session id, and calls `client.session.promptAsync` only when the wrapper prints a nudge. | Interactive TUI delivery is supported; headless `opencode run` is intentionally fail-open because the process can exit before the queued turn. |
 | Pi | `.pi/extensions/fm-primary-turnend-guard.ts` handles `session_start` reasons `startup`, `new`, and `resume`, then injects the wrapper output with `pi.sendMessage`. | The custom message reaches model context without racing an initial positional prompt. |
 | Grok | `.grok/hooks/fm-primary-sessionstart-nudge.json` registers a project `SessionStart` hook and invokes the wrapper through inline-defaulted `${GROK_WORKSPACE_ROOT:-}`. | The project hook runs when the checkout is trusted, but Grok currently discards hook stdout from model context, so this path is intentionally fail-open. |
@@ -35,8 +44,9 @@ That alternative expands trust and writes outside this repository, so Firstmate 
 ## Regression coverage
 
 `tests/fm-sessionstart-nudge.test.sh` proves wrapper silence for both gate signals, an unmarked linked worktree, a missing state directory, and an already-owned lock.
-It proves exact U+2063 `FIRSTMATE_OP:`-prefixed, `session-start`-typed one-line output for a plain primary and a marked linked secondmate primary.
+It proves the exact original U+2063 `FIRSTMATE_OP:`-prefixed, `session-start`-typed one-line output for every non-Codex transport and the exact Codex host-boundary variant, including the marker and already-owned-lock silence path.
 It also verifies tracked wrapper registration for Claude, Codex, OpenCode, Pi, and Grok.
+`tests/fm-codex-sessionstart-sandbox-live-e2e.test.sh` is the opt-in live Linux reproduction that observes transient namespace-local PID 1 lifetimes, preserves the sandboxed official-lock refusal, and proves the same official lock records the host Codex pid outside that boundary.
 `tests/fm-captain-translation-contract.test.sh` proves Ahoy's current marker rule, narrow legacy compatibility exclusions, genuine captain-message near misses, and the shared marker on supported user-role operational injections.
 `tests/fm-pi-primary-live-e2e.test.sh` and `tests/fm-opencode-primary-live-e2e.test.sh` exercise native startup paths with first-message and later-message Ahoy regressions.
 `tests/fm-turnend-guard.test.sh`, `tests/fm-pi-watch-extension.test.sh`, and `tests/fm-daemon.test.sh` cover marked guard, monitoring, and away-mode delivery.
