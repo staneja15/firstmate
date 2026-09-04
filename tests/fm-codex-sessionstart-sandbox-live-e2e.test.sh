@@ -18,6 +18,9 @@ TMP_ROOT=$(fm_test_tmproot fm-codex-sessionstart-sandbox-live)
 PRIMARY="$TMP_ROOT/primary"
 FM_TEST_CODEX_HOME="$TMP_ROOT/codex-home"
 STATE="$PRIMARY/state"
+OVERSIZED_MARKER='FIRSTMATE_OVERSIZED_DIGEST_MARKER=authoritative-middle-context-preserved'
+CODEX_LAST_MESSAGE="$TMP_ROOT/codex-last-message"
+CODEX_STDERR="$TMP_ROOT/codex-stderr"
 mkdir -p "$FM_TEST_CODEX_HOME" "$PRIMARY/bin" "$PRIMARY/.codex" "$PRIMARY/data" "$PRIMARY/config" "$STATE"
 fm_git_identity fmtest fmtest@example.invalid
 git init -q "$PRIMARY"
@@ -78,5 +81,36 @@ esac
 [ "$lock_pid" != "$host_pid" ] \
   || fail "official lock recorded the outer harness instead of the no-approval Codex session"
 
+rm -f "$STATE/.lock"
+awk 'BEGIN { for (i = 1; i <= 1200; i++) printf "prefix context filler %04d abcdefghijklmnopqrstuvwxyz\n", i }' \
+  > "$PRIMARY/data/projects.md"
+printf '%s\n' "$OVERSIZED_MARKER" > "$PRIMARY/data/captain.md"
+awk 'BEGIN { for (i = 1; i <= 1200; i++) printf "suffix context filler %04d zyxwvutsrqponmlkjihgfedcba\n", i }' \
+  > "$PRIMARY/data/learnings.md"
+
+oversized_out=$(CODEX_HOME="$FM_TEST_CODEX_HOME" FM_SESSION_START_BACKLOG_LIMIT=1 codex \
+  -a never \
+  -s workspace-write \
+  --dangerously-bypass-hook-trust \
+  -C "$PRIMARY" \
+  exec \
+  --ephemeral \
+  --json \
+  --output-last-message "$CODEX_LAST_MESSAGE" \
+  'Without using tools, reply with exactly the complete SessionStart context line beginning FIRSTMATE_OVERSIZED_DIGEST_MARKER= and nothing else.' \
+  2>"$CODEX_STDERR") \
+  || fail "oversized approval_policy=never SessionStart hook failed: $(cat "$CODEX_STDERR")"
+[ -n "$oversized_out" ] || fail "oversized Codex session returned no output"
+assert_present "$CODEX_LAST_MESSAGE" \
+  "oversized Codex session did not record its final response"
+last_message=$(cat "$CODEX_LAST_MESSAGE")
+[ "$last_message" = "$OVERSIZED_MARKER" ] \
+  || fail "oversized SessionStart context lost its authoritative middle line: $last_message"
+printf '%s\n' "$oversized_out" | jq -s -e \
+  '[.[] | select(.item.type? == "command_execution")] | length == 0' >/dev/null \
+  || fail "Codex used a shell tool instead of receiving the oversized middle line in SessionStart context"
+
 printf 'ok - %s live PID-namespace reproduction rejected two transient sandbox owners and approval_policy=never SessionStart recorded a non-PID-1 Codex process\n' \
+  "$(codex --version)"
+printf 'ok - %s oversized SessionStart preserved authoritative middle context without a tool read\n' \
   "$(codex --version)"

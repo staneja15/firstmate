@@ -27,12 +27,15 @@ The exact relevant output was:
 
 ```text
 ok - codex-cli 0.153.2 live PID-namespace reproduction rejected two transient sandbox owners and approval_policy=never SessionStart recorded a non-PID-1 Codex process
+ok - codex-cli 0.153.2 oversized SessionStart preserved authoritative middle context without a tool read
 ```
 
 Two separate `codex sandbox` calls reported namespace-local PID 1 start times of `Fri Sep 4 10:46:54 2026` and `Fri Sep 4 10:46:55 2026`.
 That disconfirms treating namespace-local PID 1 as durable lock ownership.
 The Codex hook counterfactual recorded the nested ephemeral Codex process launched with the real `approval_policy=never` configuration rather than PID 1 or the outer harness.
 Its stdout was the complete ordered session-start digest, beginning with `SESSION START` and the successful `LOCK` subsection.
+The oversized fixture placed an authoritative sentinel between large prefix and suffix context regions, and Codex returned that exact middle line without using a command tool.
+That verifies the SessionStart handler passes the complete digest directly to model context instead of replacing its middle with a spill preview.
 On Codex CLI 0.153.2 that no-approval session reported `permission_mode=bypassPermissions`, so the native payload could not distinguish it from the unrestricted label.
 Deterministic hook-interface coverage also observed that `default`, `dontAsk`, and `bypassPermissions` all invoked the official session-start path, while an already-owned lock stayed silent.
 
