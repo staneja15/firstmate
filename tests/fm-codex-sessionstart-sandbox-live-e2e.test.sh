@@ -34,7 +34,7 @@ CODEX_AUTH_SOURCE="${CODEX_HOME:-$HOME/.codex}/auth.json"
 [ -f "$CODEX_AUTH_SOURCE" ] || fail "Codex auth file not found for live approval_policy=never regression"
 ln -s "$CODEX_AUTH_SOURCE" "$FM_TEST_CODEX_HOME/auth.json"
 
-# shellcheck source=bin/fm-session-lock-lib.sh
+# shellcheck source=/dev/null
 . "$ROOT/bin/fm-session-lock-lib.sh"
 host_pid=$(fm_harness_ancestry_pid) || fail "test must run beneath a long-lived Codex harness"
 host_comm=$(ps -o comm= -p "$host_pid" 2>/dev/null | xargs basename)
