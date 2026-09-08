@@ -88,11 +88,12 @@ printf '%s\n' "$OVERSIZED_MARKER" > "$PRIMARY/data/captain.md"
 awk 'BEGIN { for (i = 1; i <= 1200; i++) printf "suffix context filler %04d zyxwvutsrqponmlkjihgfedcba\n", i }' \
   > "$PRIMARY/data/learnings.md"
 
+mkdir -p "$PRIMARY/data/nested child"
 oversized_out=$(CODEX_HOME="$FM_TEST_CODEX_HOME" FM_SESSION_START_BACKLOG_LIMIT=1 codex \
   -a never \
   -s workspace-write \
   --dangerously-bypass-hook-trust \
-  -C "$PRIMARY" \
+  -C "$PRIMARY/data/nested child" \
   exec \
   --ephemeral \
   --json \
@@ -112,5 +113,5 @@ printf '%s\n' "$oversized_out" | jq -s -e \
 
 printf 'ok - %s live PID-namespace reproduction rejected two transient sandbox owners and approval_policy=never SessionStart recorded a non-PID-1 Codex process\n' \
   "$(codex --version)"
-printf 'ok - %s oversized SessionStart preserved authoritative middle context without a tool read\n' \
+printf 'ok - %s child-directory oversized SessionStart preserved authoritative middle context without a tool read\n' \
   "$(codex --version)"

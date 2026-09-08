@@ -50,11 +50,11 @@ SH
 }
 
 run_codex_hook() {
-  local root=$1 permission_mode=$2 command payload
+  local root=$1 permission_mode=$2 command payload cwd=${3:-$1}
   command=$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$root/.codex/hooks.json")
   payload=$(jq -cn --arg mode "$permission_mode" \
     '{hook_event_name:"SessionStart",source:"startup",permission_mode:$mode}')
-  (cd "$root" && printf '%s' "$payload" | FM_HOME="$root" bash -c "$command")
+  (cd "$cwd" && printf '%s' "$payload" | FM_HOME="$root" bash -c "$command")
 }
 
 run_nudge() {
@@ -205,6 +205,36 @@ test_codex_dontask_hook_preserves_owned_lock_silence() {
   pass "Codex dontAsk SessionStart preserves already-owned-lock silence"
 }
 
+test_codex_child_directory_resolves_owning_root() {
+  local root="$TMP_ROOT/codex child primary" child mode out status
+  install_codex_hook_fixture "$root"
+  child="$root/data/nested child"
+  mkdir -p "$child"
+  for mode in default dontAsk bypassPermissions; do
+    status=0
+    rm -f "$root/session-start-ran"
+    out=$(run_codex_hook "$root" "$mode" "$child") || status=$?
+    expect_code 0 "$status" "Codex $mode child-directory startup"
+    [ "$out" = 'host session start' ] || fail "Codex child hook lost startup output: $out"
+    assert_grep 'ran' "$root/session-start-ran" "Codex child hook skipped official startup"
+  done
+  pass "Codex child-directory SessionStart resolves the owning Git root in every permission mode"
+
+  rm -f "$root/session-start-ran"
+  printf '%s\n' "$$" > "$root/state/.lock"
+  expect_silent_zero "Codex child owned-lock hook" run_codex_hook "$root" dontAsk "$child"
+  assert_absent "$root/session-start-ran" "Codex child hook reran owned startup"
+  pass "Codex child-directory SessionStart preserves already-owned-lock silence"
+
+  rm -f "$root/state/.lock"
+  git init -q "$child"
+  expect_silent_zero "Codex nested unrelated repository" run_codex_hook "$root" dontAsk "$child"
+  assert_absent "$root/session-start-ran" "Codex hook crossed a nested repository boundary"
+  expect_silent_zero "Codex outside repository" run_codex_hook "$root" dontAsk "$TMP_ROOT"
+  assert_absent "$root/session-start-ran" "Codex hook ran outside a repository"
+  pass "Codex root discovery refuses unrelated nested repositories and non-repository directories"
+}
+
 test_opencode_plugin_delivers_exact_nudge_once() {
   local root="$TMP_ROOT/opencode-primary" out status=0
   install_nudge_fixture "$root"
@@ -327,6 +357,7 @@ test_codex_default_hook_runs_session_start_on_host
 test_codex_dontask_hook_runs_session_start_on_host
 test_codex_unrestricted_hook_runs_normal_session_start
 test_codex_dontask_hook_preserves_owned_lock_silence
+test_codex_child_directory_resolves_owning_root
 test_opencode_plugin_delivers_exact_nudge_once
 test_claude_hook_delivers_exact_non_codex_nudge
 test_grok_hook_delivers_exact_non_codex_nudge

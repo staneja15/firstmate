@@ -10,7 +10,7 @@ Task-specific chronology, temporary paths, run identifiers, and delivery transcr
 
 ### Codex PID-namespace startup boundary
 
-The boundary was reproduced on 2026-09-04 with Codex CLI 0.153.2 on Linux.
+The boundary was reproduced on 2026-09-04 and reverified from both the repository root and a child directory on 2026-09-08 with Codex CLI 0.153.2 on Linux.
 
 - Initiating trigger: a real Codex session launched with `approval_policy=never` fired the native `SessionStart` hook before its first turn.
 - Masking condition: an ordinary shell tool call ran beneath a namespace-local PID 1, while the trusted native hook exposed the long-lived host Codex process in ancestry.
@@ -27,7 +27,7 @@ The exact relevant output was:
 
 ```text
 ok - codex-cli 0.153.2 live PID-namespace reproduction rejected two transient sandbox owners and approval_policy=never SessionStart recorded a non-PID-1 Codex process
-ok - codex-cli 0.153.2 oversized SessionStart preserved authoritative middle context without a tool read
+ok - codex-cli 0.153.2 child-directory oversized SessionStart preserved authoritative middle context without a tool read
 ```
 
 Two separate `codex sandbox` calls reported namespace-local PID 1 start times of `Fri Sep 4 10:46:54 2026` and `Fri Sep 4 10:46:55 2026`.
@@ -38,6 +38,19 @@ The oversized fixture placed an authoritative sentinel between large prefix and 
 That verifies the SessionStart handler passes the complete digest directly to model context instead of replacing its middle with a spill preview.
 On Codex CLI 0.153.2 that no-approval session reported `permission_mode=bypassPermissions`, so the native payload could not distinguish it from the unrestricted label.
 Deterministic hook-interface coverage also observed that `default`, `dontAsk`, and `bypassPermissions` all invoked the official session-start path, while an already-owned lock stayed silent.
+
+The child-directory counterfactual ran `tests/fm-sessionstart-nudge.test.sh` with Git 2.53.0 and GNU Bash 5.3.9 on 2026-09-08.
+Before Git root resolution, the executable hook test failed with `not ok - Codex child hook lost startup output:` because the hook silently returned no digest.
+With only the SessionStart root lookup corrected, the same test emitted:
+
+```text
+ok - Codex child-directory SessionStart resolves the owning Git root in every permission mode
+ok - Codex child-directory SessionStart preserves already-owned-lock silence
+ok - Codex root discovery refuses unrelated nested repositories and non-repository directories
+```
+
+The live oversized-context probe also launched Codex from `data/nested child` and received the complete middle sentinel without a tool read.
+This tests native hook discovery as well as executing the tracked command from a child directory.
 
 The official lock implementation is unchanged, including its competing-session refusal and its rejection of namespace-local PID 1.
 The supported-axis review found that Claude, OpenCode, Pi, and Grok still invoke the wrapper without `--codex` and retain their exact prior output.
