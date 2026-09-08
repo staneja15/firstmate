@@ -21,12 +21,13 @@ Every path exits 0, including malformed state and adapter errors, because a Clau
 
 Codex can execute ordinary shell tool calls inside a per-command PID namespace whose local PID 1 is the transient `codex-linux-sandbox` launcher.
 In that mode the official lock cannot see the long-lived host Codex ancestor.
-The native payload does not expose a reliable distinction between `approval_policy=never` and every interactive restricted profile.
+The native payload does not expose a reliable distinction between `approval_policy=never` and unrestricted sessions: both can report `permission_mode=bypassPermissions`.
 The trusted Codex hook therefore runs the one official `bin/fm-session-start.sh` invocation directly and returns its digest as developer context for every Codex permission mode.
+The handler's context limit in `.codex/hooks.json` is intentionally uncapped so authoritative middle content reaches the model, preserving AGENTS.md's read-once digest contract.
 The hook first requires a non-empty result from the shared nudge wrapper, preserving primary scope, no-mistakes gate refusal, and already-owned-lock silence before any startup mutation.
 The unchanged official lock then verifies and records the host Codex process.
 This boundary is scoped to the official startup command and does not provide general host command execution.
-An unrestricted `bypassPermissions` session runs the same official command and unchanged lock path it used before, while restricted sessions no longer depend on a sandbox approval request.
+Unrestricted sessions also run startup in the trusted hook before the first turn; the official command and lock verification remain unchanged, and startup requires no sandbox approval request.
 
 ## Harness transports
 
