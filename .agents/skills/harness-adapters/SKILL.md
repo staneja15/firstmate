@@ -85,7 +85,7 @@ Full mechanics, scoping, and fail-open behavior live in `docs/sessionstart-nudge
 `docs/verification/supervision.md` "Native session-start delivery" owns active dated commands, payloads, and evidence.
 
 - `claude`: verified native `SessionStart` stdout injection; `.claude/settings.json` matches `startup`, `resume`, and `clear`, but not `compact`.
-- `codex`: verified on 0.144.4; `.codex/hooks.json` receives `source=startup`, and wrapper stdout reaches model context.
+- `codex`: the trusted hook startup exception is owned by `docs/sessionstart-nudge.md`; dated native delivery and PID-namespace verification live in `docs/verification/supervision.md`.
 - `opencode`: verified on 1.17.18; `session.created` plus `client.session.promptAsync` starts the nudge turn in the TUI, while `opencode run` remains fail-open headless.
 - `pi`: verified native `session_start`; the existing primary extension handles `startup`, `new`, and `resume` and uses `pi.sendMessage` to inject context without racing a positional launch prompt.
 - `grok`: the 0.2.103 project `SessionStart` event fires with `source=new`, but stdout does not reach model context; the tracked project hook remains fail-open, and a global token-guarded fallback requires a captain decision.

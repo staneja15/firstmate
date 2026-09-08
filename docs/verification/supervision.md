@@ -8,6 +8,62 @@ Task-specific chronology, temporary paths, run identifiers, and delivery transcr
 
 ## Native session-start delivery
 
+### Codex PID-namespace startup boundary
+
+The boundary was reproduced on 2026-09-04 and reverified from both the repository root and a child directory on 2026-09-08 with Codex CLI 0.153.2 on Linux.
+
+- Initiating trigger: a real Codex session launched with `approval_policy=never` fired the native `SessionStart` hook before its first turn.
+- Masking condition: an ordinary shell tool call ran beneath a namespace-local PID 1, while the trusted native hook exposed the long-lived host Codex process in ancestry.
+- Visible symptom: `bin/fm-session-start.sh` printed `error: cannot locate harness process in ancestry`, entered the read-only digest path, and skipped every fleet mutation.
+
+The smallest counterfactual kept the command and official lock code unchanged and changed only the execution boundary.
+These were the reproduction commands run from the Firstmate checkout beneath a live Codex primary:
+
+```sh
+FM_CODEX_SESSIONSTART_SANDBOX_LIVE_E2E=1 tests/fm-codex-sessionstart-sandbox-live-e2e.test.sh
+```
+
+The exact relevant output was:
+
+```text
+ok - codex-cli 0.153.2 live PID-namespace reproduction rejected two transient sandbox owners and approval_policy=never SessionStart recorded a non-PID-1 Codex process
+ok - codex-cli 0.153.2 child-directory oversized SessionStart preserved authoritative middle context without a tool read
+```
+
+Two separate `codex sandbox` calls reported namespace-local PID 1 start times of `Fri Sep 4 10:46:54 2026` and `Fri Sep 4 10:46:55 2026`.
+That disconfirms treating namespace-local PID 1 as durable lock ownership.
+The Codex hook counterfactual recorded the nested ephemeral Codex process launched with the real `approval_policy=never` configuration rather than PID 1 or the outer harness.
+Its stdout was the complete ordered session-start digest, beginning with `SESSION START` and the successful `LOCK` subsection.
+The oversized fixture placed an authoritative sentinel between large prefix and suffix context regions, and Codex returned that exact middle line without using a command tool.
+That verifies the SessionStart handler passes the complete digest directly to model context instead of replacing its middle with a spill preview.
+On Codex CLI 0.153.2 that no-approval session reported `permission_mode=bypassPermissions`, so the native payload could not distinguish it from the unrestricted label.
+Deterministic hook-interface coverage also observed that `default`, `dontAsk`, and `bypassPermissions` all invoked the official session-start path, while an already-owned lock stayed silent.
+
+The child-directory counterfactual ran `tests/fm-sessionstart-nudge.test.sh` with Git 2.53.0 and GNU Bash 5.3.9 on 2026-09-08.
+Before Git root resolution, the executable hook test failed with `not ok - Codex child hook lost startup output:` because the hook silently returned no digest.
+With only the SessionStart root lookup corrected, the same test emitted:
+
+```text
+ok - Codex child-directory SessionStart resolves the owning Git root in every permission mode
+ok - Codex child-directory SessionStart preserves already-owned-lock silence
+ok - Codex root discovery refuses unrelated nested repositories and non-repository directories
+```
+
+The live oversized-context probe also launched Codex from `data/nested child` and received the complete middle sentinel without a tool read.
+This tests native hook discovery as well as executing the tracked command from a child directory.
+
+The official lock implementation is unchanged, including its competing-session refusal and its rejection of namespace-local PID 1.
+The supported-axis review found that Claude, OpenCode, Pi, and Grok still invoke the wrapper without `--codex` and retain their exact prior output.
+Kimi has no tracked native session-start transport, so this hook-only change does not affect it.
+The tmux, Herdr, Zellij, Orca, and cmux runtime backends are below the primary session-start transport boundary and require no adapter change.
+
+Current deterministic and live entry points for this boundary are:
+
+```sh
+tests/fm-sessionstart-nudge.test.sh
+FM_CODEX_SESSIONSTART_SANDBOX_LIVE_E2E=1 tests/fm-codex-sessionstart-sandbox-live-e2e.test.sh
+```
+
 The cross-harness transport pass ran on 2026-07-17 with Codex 0.144.4, Grok 0.2.103, OpenCode 1.17.18, Pi 0.80.10, and the tracked Claude hook wiring.
 
 Codex command shape:
