@@ -25,6 +25,7 @@ for name in ("state", "data", "config"):
 subprocess.run(["git", "init", "-q", str(root)], check=True)
 (root / "AGENTS.md").write_text("Answer the probe without tools.\n")
 shutil.copytree(source / "bin", root / "bin")
+shutil.copytree(source / "docs/supervision-protocols", root / "docs/supervision-protocols")
 shutil.copyfile(source / ".codex/hooks.json", root / ".codex/hooks.json")
 hook = root / "bin/fm-codex-sessionstart-hook.sh"
 text = hook.read_text().replace(

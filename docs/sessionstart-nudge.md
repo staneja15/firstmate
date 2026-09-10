@@ -26,9 +26,8 @@ When Codex delivers the enabled, trusted native event, the hook runs the one off
 The handler's context limit in `.codex/hooks.json` is intentionally uncapped so authoritative middle content reaches the model, preserving AGENTS.md's read-once digest contract.
 The hook validates primary scope, no-mistakes gate refusal, and the native `session_id` before invoking composed startup.
 `bin/fm-session-start.sh` owns the native completion receipt and serialization mechanics: each new chat gets a complete digest even when the process already owns the fleet, while repeated delivery for an already-completed chat stays silent after host ownership is verified.
-A receipt never overrides a competing owner and is recorded only after the digest completes.
 Missing or invalid native identity produces an actionable recovery diagnostic without guessing a chat identity.
-The unchanged official lock then verifies and records the host Codex process.
+The official lock remains the authority for verifying and recording the host Codex process.
 This boundary is scoped to the official startup command and does not provide general host command execution.
 Unrestricted sessions use the same trusted hook path; the official command and lock verification remain unchanged.
 A hook file on disk is not proof that the current thread received its digest; use the recovery procedure below when native context is absent.

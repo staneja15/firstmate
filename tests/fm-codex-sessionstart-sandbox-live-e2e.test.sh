@@ -27,8 +27,10 @@ git init -q "$PRIMARY"
 git -C "$PRIMARY" commit -q --allow-empty -m init
 : > "$PRIMARY/AGENTS.md"
 cp -R "$ROOT/bin/." "$PRIMARY/bin/"
+mkdir -p "$PRIMARY/docs"
+cp -R "$ROOT/docs/supervision-protocols" "$PRIMARY/docs/"
 cp "$ROOT/.codex/hooks.json" "$PRIMARY/.codex/hooks.json"
-git -C "$PRIMARY" add AGENTS.md bin .codex/hooks.json
+git -C "$PRIMARY" add AGENTS.md bin docs .codex/hooks.json
 git -C "$PRIMARY" commit -q -m fixture
 CODEX_AUTH_SOURCE="${CODEX_HOME:-$HOME/.codex}/auth.json"
 [ -f "$CODEX_AUTH_SOURCE" ] || fail "Codex auth file not found for live approval_policy=never regression"

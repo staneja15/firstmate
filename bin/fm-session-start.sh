@@ -8,8 +8,8 @@
 # data/captain.md, data/captain-shared.md, data/learnings.md, then run
 # fm-lock.sh, fm-wake-drain.sh, then read data/backlog.md, every state/*.meta,
 # and every state/*.status.
-# Every one of those reads is UNCONDITIONAL at every session start, so they
-# belong in a script, not in N agent turns.
+# These startup reads belong in the composed script, not in N agent turns;
+# the preflight and native replay exceptions below can stop composition early.
 #
 # COMPOSITION, NOT DUPLICATION: this script calls fm-lock.sh, fm-bootstrap.sh,
 # and fm-wake-drain.sh as real subprocesses and prints their real output. It
@@ -24,12 +24,14 @@
 #
 # ORDERING, and why LOCK now runs before BOOTSTRAP (the old AGENTS.md order
 # was bootstrap-then-lock):
+# Steps 2 onward apply only after ancestry resolves and native completion
+# checks permit composition; see Usage below for early-return behavior.
 #
 #   1. lock          - acquire the per-home session lock FIRST, before any
 #                       mutating step runs.
 #   2. bootstrap      - home-local stale Herdr projection cleanup runs only
 #                       when this session actually holds the lock. Detect-only
-#                       diagnostics always run. Bootstrap's five MUTATING sweeps
+#                       diagnostics run in both modes. Bootstrap's five MUTATING sweeps
 #                       (legacy PR-check migration, secondmate fast-forward,
 #                       secondmate liveness, X-mode artifact writes, fleet sync)
 #                       also run only when locked.
@@ -37,11 +39,11 @@
 #                       when locked.
 #   4. context digest - data/projects.md, data/secondmates.md, data/captain.md,
 #                       data/captain-shared.md, data/learnings.md: read-only,
-#                       always safe, always runs.
+#                       runs in both modes.
 #   5. fleet digest   - a compact data/backlog.md identity/metadata listing,
 #                       every state/*.meta, a bounded state/*.status tail,
 #                       state/.afk, and a cheap per-task endpoint-liveness read:
-#                       read-only, always runs.
+#                       read-only, runs in both modes.
 #   6. closing reminder - prints the context-specific watcher next step; this
 #                       script points back to the emitted harness supervision
 #                       block and deliberately never arms the watcher itself.
@@ -58,8 +60,8 @@
 # exists to prevent, so locking first closes the hole outright: only the
 # session that actually wins the lock ever touches shared mutable state.
 #
-# The tradeoff this ordering accepts: a refused (read-only) session must not
-# go dark. So on refusal, bootstrap still runs (in FM_BOOTSTRAP_DETECT_ONLY=1
+# The tradeoff this ordering accepts: a refused (read-only) session with
+# resolved ancestry must not go dark. Bootstrap still runs (in FM_BOOTSTRAP_DETECT_ONLY=1
 # mode) for its read-only detect lines - missing tools, gh auth, the
 # worktree-tangle check, the harness override, crew-dispatch validation,
 # tasks-axi and quota-axi tool checks, and tasks-axi availability - none of
@@ -68,7 +70,7 @@
 # Only projection cleanup, the five bootstrap mutating sweeps, and the
 # wake-queue drain are skipped.
 # The context and fleet-state digests
-# below are always read-only, so they run unconditionally in both modes.
+# below are read-only, so they run in both modes when composition proceeds.
 #
 # BACKLOG DIGEST: FM_SESSION_START_BACKLOG_LIMIT bounds the startup backlog
 # listing, default 80 items.
@@ -94,8 +96,9 @@
 #   neither receipts nor the claim grant fleet authority. Old-host receipts
 #   cannot silence a new owner. Missing native identity must use host recovery,
 #   not a guessed ID. Calls without this native-only option retain normal behavior.
-#   Prints the full ordered digest to stdout and always exits 0: this is a
-#   reporting command, not a gate. A lock refusal is reported as a loud
+#   Normal reporting paths exit 0; native delivery interrupted by a signal
+#   exits nonzero without recording completion. This is a reporting command,
+#   not a gate. A lock refusal is reported as a loud
 #   banner inline, never a silent failure or a non-zero exit that would make
 #   an agent skip the rest of the digest.
 #   Exception: unresolved harness ancestry is an execution-boundary failure,
