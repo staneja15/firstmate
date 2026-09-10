@@ -338,6 +338,18 @@ EOF
   fakebin=$(make_fake_spawn_toolchain "$w")
   fm_fake_exit0 "$fakebin" node gh-axi chrome-devtools-axi lavish-axi gh treehouse no-mistakes tasks-axi quota-axi pgrep
 
+  # Digest rendering requires resolved harness ancestry, including on CI where
+  # no real agent is running. Match the session-start suite's harness fixture.
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  *"comm="*) printf '%s\n' /usr/local/bin/claude; exit 0 ;;
+  *"args="*) printf '%s\n' claude; exit 0 ;;
+esac
+exit 1
+SH
+  chmod +x "$fakebin/ps"
+
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$root" \
     "$ROOT/bin/fm-session-start.sh")
 
