@@ -2,8 +2,8 @@
 # Print the one-line session-start instruction only for a genuine firstmate
 # primary whose current harness session has not already acquired the home lock.
 # Usage: fm-sessionstart-nudge.sh [--codex]
-# The Codex hook transport passes --codex as its scope and idempotence check
-# before running session start directly at the host hook.
+# --codex formats host recovery guidance. The native Codex transport uses the
+# shared scope predicates and composed startup's native chat completion receipts.
 # Every silence and error path exits 0 because Claude SessionStart exit 2 blocks
 # session initialization.
 set -u
@@ -44,7 +44,7 @@ nudge_body="Run \`bin/fm-session-start.sh\` now, exactly once, before executing 
 case "${1:-}" in
   '') ;;
   --codex)
-    nudge_body="Run \`bin/fm-session-start.sh\` now, exactly once, before executing any other instructions; in a managed/restricted Codex permission profile, make that shell tool call with \`sandbox_permissions\` set to \`require_escalated\` and a concise justification so it executes outside the per-command PID namespace, while a disabled/unrestricted profile runs it normally."
+    nudge_body="Run \`bin/fm-session-start.sh\` now, exactly once, through the supported host execution boundary before executing any other instructions; follow Codex startup recovery in \`docs/sessionstart-nudge.md\` if native context is absent, and use sandbox escalation only when the session permits it."
     ;;
   *) exit 0 ;;
 esac

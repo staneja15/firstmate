@@ -79,7 +79,7 @@ The subagent tool presents to the model as `Agent`, and on Claude Code 2.1.217 b
 
 ## Primary session-start nudge
 
-AGENTS.md section 3 remains the behavioral owner for session start, while tracked native adapters invoke `bin/fm-sessionstart-nudge.sh` as an idempotent enforcement layer.
+AGENTS.md section 3 remains the behavioral owner for session start; `docs/sessionstart-nudge.md` owns the nudge transports and Codex native chat-identity exception.
 The wrapper prints one canonically typed `session-start` instruction to run `bin/fm-session-start.sh`; it never runs the digest, wake drain, bootstrap sweeps, lock, or supervision arm itself.
 Full mechanics, scoping, and fail-open behavior live in `docs/sessionstart-nudge.md`.
 `docs/verification/supervision.md` "Native session-start delivery" owns active dated commands, payloads, and evidence.

@@ -84,11 +84,25 @@
 # compatible tasks-axi is available, or `data/backlog.md` when the file body is
 # truly needed.
 #
-# Usage: fm-session-start.sh
+# Usage: fm-session-start.sh [--codex-session <native-session-id>]
+#   The Codex native hook supplies its session_id. After the official fleet
+#   lock succeeds, state/.codex-startup/<session-id> records the completing host
+#   harness PID. A matching receipt silences duplicate same-chat delivery;
+#   a new ID runs the whole composition even in the same host process.
+#   state/.codex-startup.claim serializes native deliveries using the shared
+#   lock helper. Receipts are published atomically only after the full digest;
+#   neither receipts nor the claim grant fleet authority. Old-host receipts
+#   cannot silence a new owner. Missing native identity must use host recovery,
+#   not a guessed ID. Calls without this native-only option retain normal behavior.
 #   Prints the full ordered digest to stdout and always exits 0: this is a
 #   reporting command, not a gate. A lock refusal is reported as a loud
 #   banner inline, never a silent failure or a non-zero exit that would make
 #   an agent skip the rest of the digest.
+#   Exception: unresolved harness ancestry is an execution-boundary failure,
+#   not a completed startup. Print host recovery guidance and stop before
+#   bootstrap or the digest so sandbox-only auth/tool results cannot masquerade
+#   as host diagnostics. Retry this same composed command from the supported
+#   host tool boundary; never reconstruct startup from its component scripts.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -97,6 +111,15 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
+CODEX_SESSION_ID=
+if [ "$#" -gt 0 ]; then
+  if [ "$#" -ne 2 ] || [ "$1" != --codex-session ] \
+    || ! [[ "$2" =~ ^[A-Za-z0-9_-]{1,128}$ ]]; then
+    printf '%s\n' 'error: usage: fm-session-start.sh [--codex-session <native-session-id>]'
+    exit 0
+  fi
+  CODEX_SESSION_ID=$2
+fi
 PRIMARY_HARNESS=$("$SCRIPT_DIR/fm-harness.sh" 2>/dev/null || printf unknown)
 
 # shellcheck source=bin/fm-backend.sh
@@ -241,13 +264,60 @@ pi_extension_loaded() {
   [ "$marker_version" = "$expected_version" ] && [ "$marker_pid" = "$lock_pid" ]
 }
 
-section "SESSION START - $FM_HOME"
-
 # --- 1. lock -----------------------------------------------------------
-subsection "LOCK"
 LOCK_OUT=$("$SCRIPT_DIR/fm-lock.sh" 2>&1)
 LOCK_RC=$?
+# A native receipt is considered only after the official host lock succeeded.
+# Keep duplicate delivery completely silent, including the digest headings.
+CODEX_RECEIPT_TMP=
+if [ "$LOCK_RC" -eq 0 ] && [ -n "$CODEX_SESSION_ID" ]; then
+  # shellcheck source=bin/fm-session-lock-lib.sh
+  . "$SCRIPT_DIR/fm-session-lock-lib.sh"
+  # shellcheck source=bin/fm-wake-lib.sh
+  . "$SCRIPT_DIR/fm-wake-lib.sh"
+  CODEX_OWNER=$(fm_harness_ancestry_pid) || exit 0
+  CODEX_RECEIPT_DIR="$STATE/.codex-startup"
+  CODEX_CLAIM="$STATE/.codex-startup.claim"
+  if [ -L "$CODEX_RECEIPT_DIR" ] || ! mkdir -p "$CODEX_RECEIPT_DIR"; then
+    printf '%s\n' 'CODEX_STARTUP_STATE_ERROR: cannot prepare native completion receipts; startup has not run.'
+    exit 0
+  fi
+  fm_lock_acquire_wait "$CODEX_CLAIM"
+  trap 'fm_lock_release "$CODEX_CLAIM"; [ -z "$CODEX_RECEIPT_TMP" ] || rm -f "$CODEX_RECEIPT_TMP"' EXIT
+  trap 'exit 1' HUP INT TERM
+  CODEX_RECEIPT="$CODEX_RECEIPT_DIR/$CODEX_SESSION_ID"
+  if [ -L "$CODEX_RECEIPT" ] || { [ -e "$CODEX_RECEIPT" ] && [ ! -f "$CODEX_RECEIPT" ]; }; then
+    printf '%s\n' 'CODEX_STARTUP_STATE_ERROR: native completion receipt is not a regular file; startup has not run.'
+    exit 0
+  fi
+  if fm_session_lock_owned_by_self "$STATE" \
+    && [ "$(cat "$CODEX_RECEIPT" 2>/dev/null)" = "$CODEX_OWNER" ]; then
+    exit 0
+  fi
+  CODEX_RECEIPT_TMP=$(mktemp "$CODEX_RECEIPT_DIR/.pending.XXXXXX") || {
+    printf '%s\n' 'CODEX_STARTUP_STATE_ERROR: cannot prepare native completion receipt; startup has not run.'
+    exit 0
+  }
+fi
+section "SESSION START - $FM_HOME"
+subsection "LOCK"
 printf '%s\n' "$LOCK_OUT"
+if [ "$LOCK_RC" -ne 0 ] && [ "$LOCK_OUT" = 'error: cannot locate harness process in ancestry' ]; then
+  cat <<'EOF'
+SESSION_START_HOST_REQUIRED: startup has not run; harness ancestry is unavailable here.
+No bootstrap, wake drain, or context/fleet digest was run. Stay read-only here.
+This does not establish a competing host owner or a host authentication failure.
+For Codex without a native startup digest, follow docs/sessionstart-nudge.md
+"Codex startup recovery": use the supported host execution boundary to run
+bin/fm-session-start.sh once, with the same Firstmate home. Use an existing
+authorized host tool when available; request sandbox escalation only when the
+session permits it. If no host route is available, report that boundary blocker.
+Do not use a namespace PID (including PID 1), replace a live owner's lock,
+run separate lock/bootstrap/drain commands, or request an auth login based on
+this attempt. Only the official host lock result establishes fleet authority.
+EOF
+  exit 0
+fi
 READ_ONLY=0
 if [ "$LOCK_RC" -ne 0 ]; then
   READ_ONLY=1
@@ -437,4 +507,13 @@ rebuild or create it per AGENTS.md), its contents looked unparseable/corrupt,
 or an individual full status log is needed for older wake-event history.
 EOF
 
+if [ -n "$CODEX_RECEIPT_TMP" ]; then
+  if fm_session_lock_owned_by_self "$STATE" \
+    && printf '%s\n' "$CODEX_OWNER" > "$CODEX_RECEIPT_TMP" \
+    && mv -f "$CODEX_RECEIPT_TMP" "$CODEX_RECEIPT"; then
+    CODEX_RECEIPT_TMP=
+  else
+    printf '%s\n' 'CODEX_STARTUP_STATE_ERROR: digest delivered but completion receipt was not recorded; do not repeat startup in this chat.'
+  fi
+fi
 exit 0

@@ -413,7 +413,7 @@ run_session_start() {
   local home=$1 root=$2 path=$3
   env -u CLAUDECODE -u PI_CODING_AGENT -u GROK_AGENT \
     FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
-    "$SESSION_START"
+    "$SESSION_START" "${@:4}"
 }
 
 # prepare_session_start_secondmate <name>: a throwaway main home and Pi
@@ -583,6 +583,111 @@ EOF
 }
 
 # --- lock refusal: read-only path --------------------------------------------
+
+test_codex_native_chat_identity() {
+  local rec root home fakebin out pid=$$ saved_queue holder i count=0 child
+  local -a children=()
+  rec=$(new_world codex-native-identity)
+  IFS='|' read -r root home fakebin <<<"$rec"
+  make_fake_toolchain "$fakebin"
+  cat > "$fakebin/ps" <<SH
+#!/usr/bin/env bash
+case "\$*" in
+  *'ppid='*) echo $pid ;;
+  *'comm='*|*'args='*)
+    if [ "\${!#}" = $pid ] || [ "\${!#}" = "\${FM_TEST_OTHER_OWNER:-}" ]; then echo codex; else echo bash; fi ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH" --codex-session chat-a)
+  assert_contains "$out" 'FLEET STATE' 'first native chat lost its digest'
+  [ "$(cat "$home/state/.codex-startup/chat-a")" = "$pid" ] || fail 'native receipt lost host identity'
+  append_wake "$home/state" signal task-a 'done: deliver to new chat' || fail 'seed wake failed'
+  saved_queue=$(cat "$home/state/.wake-queue")
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH" --codex-session chat-a)
+  [ -z "$out" ] || fail 'duplicate same-chat delivery reran startup'
+  [ "$(cat "$home/state/.wake-queue")" = "$saved_queue" ] || fail 'duplicate startup drained queued work'
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH" --codex-session chat-b)
+  assert_contains "$out" 'deliver to new chat' 'new chat failed to acquire queued work'
+  assert_contains "$out" 'FLEET STATE' 'new chat in same process lost its digest'
+  [ "$(cat "$home/state/.lock")" = "$pid" ] || fail 'new chat changed host ownership'
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH" --codex-session chat-a)
+  [ -z "$out" ] || fail 'later chat invalidated earlier same-chat idempotence'
+
+  for i in 1 2 3; do
+    run_session_start "$home" "$root" "$fakebin:$BASE_PATH" --codex-session chat-race > "$home/race-$i" &
+    children+=("$!")
+  done
+  for child in "${children[@]}"; do wait "$child" || fail 'concurrent native startup failed'; done
+  for i in 1 2 3; do
+    if [ -s "$home/race-$i" ]; then
+      count=$((count + 1))
+      assert_grep 'FLEET STATE' "$home/race-$i" 'native race winner omitted its digest'
+    fi
+  done
+  [ "$count" -eq 1 ] || fail 'concurrent same-chat deliveries ran startup more than once'
+
+  # A receipt is never ownership authority: an existing completed chat must
+  # still refuse a different live owner before it can silence or run anything.
+  sleep 300 &
+  holder=$!
+  printf '%s\n' "$holder" > "$home/state/.lock"
+  out=$(FM_TEST_OTHER_OWNER="$holder" run_session_start "$home" "$root" "$fakebin:$BASE_PATH" --codex-session chat-a)
+  [ "$(cat "$home/state/.lock")" = "$holder" ] || fail 'receipt overrode a competing live owner'
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  assert_contains "$out" 'another live firstmate session holds the lock' 'native receipt concealed competing owner'
+  assert_contains "$out" 'READ-ONLY SESSION' 'native owner refusal lost read-only mode'
+  # A receipt belonging to a prior process is not a completion for this host.
+  printf '1\n' > "$home/state/.codex-startup/chat-a"
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH" --codex-session chat-a)
+  assert_contains "$out" 'FLEET STATE' 'stale receipt silenced the new host'
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH" --codex-session '../escape')
+  assert_contains "$out" 'error: usage:' 'malformed native identity was accepted'
+  [ ! -e "$home/state/escape" ] || fail 'native identity escaped the receipt directory'
+  pass 'Codex native chat identity runs each new chat once and never overrides a competing owner'
+}
+
+test_unresolved_ancestry_defers_to_host() {
+  local rec root home fakebin out saved_lock saved_queue
+  rec=$(new_world unresolved-ancestry)
+  IFS='|' read -r root home fakebin <<<"$rec"
+  make_fake_toolchain "$fakebin"
+  # An ordinary Codex tool's PID namespace hides the host owner. In particular,
+  # PID 1's name alone must not grant authority or make that owner look stale.
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  *'ppid='*) echo 1 ;;
+  *'-p 1') echo codex ;;
+  *'comm='*) echo bash ;;
+  *'args='*) echo bash ;;
+esac
+SH
+  cat > "$fakebin/gh" <<'SH'
+#!/usr/bin/env bash
+printf 'called\n' >> "$FM_HOME/auth-probe"
+exit 1
+SH
+  chmod +x "$fakebin/ps" "$fakebin/gh"
+  printf '987654\n' > "$home/state/.lock"
+  append_wake "$home/state" signal task-a 'done: preserve for host' || fail 'seed wake failed'
+  saved_lock=$(cat "$home/state/.lock")
+  saved_queue=$(cat "$home/state/.wake-queue")
+  printf 'PRIVATE_CONTEXT_SENTINEL\n' > "$home/data/captain.md"
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" 'error: cannot locate harness process in ancestry' 'official lock error lost'
+  assert_contains "$out" 'SESSION_START_HOST_REQUIRED' 'host fallback missing'
+  assert_contains "$out" 'startup has not run' 'failed preflight was called a completed startup'
+  assert_contains "$out" 'bin/fm-session-start.sh once' 'fallback must retain composed startup'
+  assert_not_contains "$out" 'NEEDS_GH_AUTH' 'sandbox auth failure was presented as host truth'
+  assert_not_contains "$out" 'PRIVATE_CONTEXT_SENTINEL' 'failed boundary printed an authoritative digest'
+  assert_not_contains "$out" 'FLEET STATE' 'failed boundary inspected fleet endpoints'
+  [ ! -e "$home/auth-probe" ] || fail 'bootstrap auth probe ran before host verification'
+  [ "$(cat "$home/state/.lock")" = "$saved_lock" ] || fail 'unseen host owner overwritten'
+  [ "$(cat "$home/state/.wake-queue")" = "$saved_queue" ] || fail 'unverified startup drained work'
+  pass 'unresolved ancestry preserves host ownership and queues and defers diagnostics to host startup'
+}
 
 test_lock_refusal_read_only_path() {
   local rec root home fakebin holder_pid out status
@@ -1356,6 +1461,8 @@ EOF
 }
 
 test_context_digest_absent_empty_present
+test_codex_native_chat_identity
+test_unresolved_ancestry_defers_to_host
 test_lock_refusal_read_only_path
 test_lock_write_failure_read_only_path
 test_session_lock_concurrent_single_winner

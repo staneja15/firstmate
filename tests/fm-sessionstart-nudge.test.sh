@@ -12,7 +12,7 @@ NUDGE="$ROOT/bin/fm-sessionstart-nudge.sh"
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-operational-input.sh"
 NUDGE_TEXT="Run \`bin/fm-session-start.sh\` now, exactly once, before executing any other instructions."
-CODEX_NUDGE_TEXT="Run \`bin/fm-session-start.sh\` now, exactly once, before executing any other instructions; in a managed/restricted Codex permission profile, make that shell tool call with \`sandbox_permissions\` set to \`require_escalated\` and a concise justification so it executes outside the per-command PID namespace, while a disabled/unrestricted profile runs it normally."
+CODEX_NUDGE_TEXT="Run \`bin/fm-session-start.sh\` now, exactly once, through the supported host execution boundary before executing any other instructions; follow Codex startup recovery in \`docs/sessionstart-nudge.md\` if native context is absent, and use sandbox escalation only when the session permits it."
 fm_operational_input_encode session-start "$NUDGE_TEXT" NUDGE_LINE \
   || fail "could not construct expected session-start nudge"
 fm_operational_input_encode session-start "$CODEX_NUDGE_TEXT" CODEX_NUDGE_LINE \
@@ -45,6 +45,7 @@ install_codex_hook_fixture() {
 #!/usr/bin/env bash
 printf 'host session start\n'
 printf 'ran\n' > "$FM_HOME/session-start-ran"
+printf '%s\n' "$@" > "$FM_HOME/session-start-args"
 SH
   chmod +x "$root/bin/fm-session-start.sh"
 }
@@ -53,7 +54,7 @@ run_codex_hook() {
   local root=$1 permission_mode=$2 command payload cwd=${3:-$1}
   command=$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$root/.codex/hooks.json")
   payload=$(jq -cn --arg mode "$permission_mode" \
-    '{hook_event_name:"SessionStart",source:"startup",permission_mode:$mode}')
+    '{hook_event_name:"SessionStart",source:"startup",permission_mode:$mode,session_id:"native-chat"}')
   (cd "$cwd" && printf '%s' "$payload" | FM_HOME="$root" bash -c "$command")
 }
 
@@ -91,11 +92,10 @@ test_codex_primary_nudges_outside_managed_pid_namespace() {
   [ "$out" = "$CODEX_NUDGE_LINE" ] || fail "Codex primary printed unexpected output: $out"
   prefix_hex=$(printf '%s' "$out" | head -c 3 | od -An -tx1 | tr -d ' \n')
   [ "$prefix_hex" = e281a3 ] || fail "Codex primary nudge lost its U+2063 operational marker: $prefix_hex"
-  # shellcheck disable=SC2016 # Backticks are literal prompt markup.
-  assert_contains "$out" 'sandbox_permissions` set to `require_escalated' \
-    "Codex primary nudge does not require the managed shell call to leave the PID namespace"
-  assert_contains "$out" 'disabled/unrestricted profile runs it normally' \
-    "Codex primary nudge changed the already-unsandboxed command path"
+  assert_contains "$out" 'supported host execution boundary' \
+    "Codex primary nudge lost the host execution requirement"
+  assert_contains "$out" 'sandbox escalation only when the session permits it' \
+    "Codex primary nudge incorrectly requires an unavailable escalation route"
   pass "fm-sessionstart-nudge: Codex gets the exact marked host-boundary instruction"
 }
 
@@ -193,16 +193,29 @@ test_codex_unrestricted_hook_runs_normal_session_start() {
   pass "Codex unrestricted SessionStart preserves the normal startup command"
 }
 
-test_codex_dontask_hook_preserves_owned_lock_silence() {
+test_codex_owned_lock_defers_to_native_identity() {
   local root="$TMP_ROOT/codex-dontask-owned" out status=0
   install_codex_hook_fixture "$root"
   printf '%s\n' "$$" > "$root/state/.lock"
   out=$(run_codex_hook "$root" dontAsk) || status=$?
   expect_code 0 "$status" "Codex dontAsk owned-lock hook"
-  [ -z "$out" ] || fail "Codex dontAsk owned-lock hook printed output: $out"
-  assert_absent "$root/session-start-ran" \
-    "Codex dontAsk hook reran session start after verified lock ownership"
-  pass "Codex dontAsk SessionStart preserves already-owned-lock silence"
+  [ "$out" = 'host session start' ] || fail "Codex new chat was suppressed by process ownership: $out"
+  [ "$(cat "$root/session-start-args")" = $'--codex-session\nnative-chat' ] \
+    || fail "Codex native session identity was not forwarded to composed startup"
+  pass "Codex native identity reaches composed startup even when the process already owns the lock"
+}
+
+test_codex_identity_and_gate_refusal() {
+  local root="$TMP_ROOT/codex-identity-gate" out
+  install_codex_hook_fixture "$root"
+  out=$(printf '%s' '{"hook_event_name":"SessionStart"}' \
+    | FM_HOME="$root" "$root/bin/fm-codex-sessionstart-hook.sh")
+  assert_contains "$out" 'CODEX_STARTUP_IDENTITY_REQUIRED' 'missing native identity was silently guessed'
+  assert_absent "$root/session-start-ran" 'native startup ran without a chat identity'
+  out=$(FM_GATE_REFUSE_BYPASS=0 NO_MISTAKES_GATE=1 run_codex_hook "$root" default)
+  [ -z "$out" ] || fail 'native gate refusal leaked context'
+  assert_absent "$root/session-start-ran" 'native gate agent acquired startup authority'
+  pass 'Codex native startup refuses missing identity and no-mistakes gate scope'
 }
 
 test_codex_child_directory_resolves_owning_root() {
@@ -222,9 +235,10 @@ test_codex_child_directory_resolves_owning_root() {
 
   rm -f "$root/session-start-ran"
   printf '%s\n' "$$" > "$root/state/.lock"
-  expect_silent_zero "Codex child owned-lock hook" run_codex_hook "$root" dontAsk "$child"
-  assert_absent "$root/session-start-ran" "Codex child hook reran owned startup"
-  pass "Codex child-directory SessionStart preserves already-owned-lock silence"
+  out=$(run_codex_hook "$root" dontAsk "$child")
+  [ "$out" = 'host session start' ] || fail 'Codex child new-chat startup was suppressed'
+  pass "Codex child-directory startup delegates native identity despite an owned process lock"
+  rm -f "$root/session-start-ran"
 
   rm -f "$root/state/.lock"
   git init -q "$child"
@@ -356,7 +370,8 @@ test_owned_lock_is_silent
 test_codex_default_hook_runs_session_start_on_host
 test_codex_dontask_hook_runs_session_start_on_host
 test_codex_unrestricted_hook_runs_normal_session_start
-test_codex_dontask_hook_preserves_owned_lock_silence
+test_codex_owned_lock_defers_to_native_identity
+test_codex_identity_and_gate_refusal
 test_codex_child_directory_resolves_owning_root
 test_opencode_plugin_delivers_exact_nudge_once
 test_claude_hook_delivers_exact_non_codex_nudge

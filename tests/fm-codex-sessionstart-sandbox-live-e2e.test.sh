@@ -54,6 +54,31 @@ expect_code 1 "$status" "sandbox-local official lock attempt"
   || fail "sandbox-local official lock returned unexpected output: $sandbox_out"
 [ ! -e "$STATE/.lock" ] || fail "sandbox-local PID 1 was incorrectly published as lock owner"
 
+# The complete startup command must not turn that same failed preflight into
+# a misleading authentication diagnosis or an authoritative read-once digest.
+# shellcheck disable=SC2016 # Parameters expand inside the nested sandbox shell.
+boundary_out=$(codex sandbox -- bash -lc \
+  'FM_HOME="$1" "$2/bin/fm-session-start.sh"' _ "$PRIMARY" "$ROOT" 2>&1) \
+  || fail "sandbox-local startup reporting failed"
+assert_contains "$boundary_out" 'SESSION_START_HOST_REQUIRED' 'missing composed host fallback'
+assert_not_contains "$boundary_out" 'NEEDS_GH_AUTH' 'sandbox startup requested authentication repair'
+assert_not_contains "$boundary_out" 'FLEET STATE' 'sandbox startup published an authoritative digest'
+[ ! -e "$STATE/.lock" ] || fail 'sandbox composed startup published a transient owner'
+
+# The authorized host fallback uses the same composed command in the current
+# long-lived harness, with a separate empty home so no real fleet is touched.
+FALLBACK_HOME="$TMP_ROOT/fallback-home"
+mkdir -p "$FALLBACK_HOME/state" "$FALLBACK_HOME/data" "$FALLBACK_HOME/config"
+printf 'HOST_FALLBACK_CONTEXT=usable-fleet-context\n' > "$FALLBACK_HOME/data/captain.md"
+fallback_out=$(FM_HOME="$FALLBACK_HOME" FM_ROOT_OVERRIDE="$PRIMARY" "$ROOT/bin/fm-session-start.sh") \
+  || fail 'authorized host fallback failed'
+[ "$(cat "$FALLBACK_HOME/state/.lock")" = "$host_pid" ] \
+  || fail 'fallback did not retain the current long-lived host harness identity'
+assert_contains "$fallback_out" "lock acquired: harness pid $host_pid" 'fallback did not acquire ownership'
+assert_contains "$fallback_out" 'HOST_FALLBACK_CONTEXT=usable-fleet-context' 'fallback lost fleet context'
+assert_contains "$fallback_out" 'FLEET STATE' 'fallback omitted fleet digest'
+assert_not_contains "$fallback_out" 'SESSION_START_HOST_REQUIRED' 'host fallback was still unresolved'
+
 sleep 1
 pid_one_second=$(codex sandbox -- bash -lc 'ps -o lstart=,comm=,args= -p 1') \
   || fail "could not reinspect Codex sandbox PID 1"
@@ -115,3 +140,10 @@ printf 'ok - %s live PID-namespace reproduction rejected two transient sandbox o
   "$(codex --version)"
 printf 'ok - %s child-directory oversized SessionStart preserved authoritative middle context without a tool read\n' \
   "$(codex --version)"
+printf 'ok - %s sandbox composed startup deferred diagnostics and digest to the successful native host invocation\n' \
+  "$(codex --version)"
+printf 'ok - %s authorized host fallback acquired the current harness lock and delivered usable fleet context\n' \
+  "$(codex --version)"
+
+python3 "$ROOT/tests/codex-sessionstart-newchat.py" "$ROOT" "$TMP_ROOT" "$FM_TEST_CODEX_HOME" \
+  || fail 'native Codex TUI new-chat regression failed'

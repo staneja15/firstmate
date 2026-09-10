@@ -8,6 +8,63 @@ Task-specific chronology, temporary paths, run identifiers, and delivery transcr
 
 ## Native session-start delivery
 
+### Codex native chat identity and host recovery
+
+Verified on 2026-09-10 with `codex-cli 0.153.2` on Linux.
+The current operator procedure is [Codex startup recovery](../sessionstart-nudge.md#codex-startup-recovery).
+
+```sh
+tests/fm-session-start.test.sh
+tests/fm-sessionstart-nudge.test.sh
+FM_CODEX_SESSIONSTART_SANDBOX_LIVE_E2E=1 tests/fm-codex-sessionstart-sandbox-live-e2e.test.sh
+```
+
+The new deterministic regression failed against the previous startup implementation with:
+
+```text
+not ok - host fallback missing (missing: 'SESSION_START_HOST_REQUIRED')
+```
+
+With the boundary correction, the relevant output is:
+
+```text
+ok - unresolved ancestry preserves host ownership and queues and defers diagnostics to host startup
+ok - codex-cli 0.153.2 sandbox composed startup deferred diagnostics and digest to the successful native host invocation
+ok - codex-cli 0.153.2 authorized host fallback acquired the current harness lock and delivered usable fleet context
+```
+
+The real Linux counterfactual keeps the official command and lock implementation unchanged and varies only the execution boundary.
+The sandbox attempt returns before authentication probes or the authoritative digest; the authorized host fallback records the current long-lived harness and emits the fixture's captain context and fleet state.
+Existing competing-owner and lock-publication tests continue to exercise the complete read-only digest rather than this unresolved-ancestry preflight.
+
+An additional interactive lifecycle check used an isolated plain Firstmate-shaped repository and Codex home, the tracked hook registration, and a fixture startup body that called the official lock and appended a startup counter.
+The hook entrypoint was instrumented in the fixture before its nudge guard to count native `SessionStart` deliveries independently of startup invocations.
+The command shape was:
+
+```sh
+CODEX_HOME="$LAB/codex-home" codex -C "$LAB/primary" -a never -s workspace-write --dangerously-bypass-hook-trust --no-alt-screen
+```
+
+Submitting the first prompt acquired a non-PID-1 host lock and incremented the startup counter once.
+Before the correction, submitting another prompt after `/new` in the same TUI process delivered `SessionStart` but left the startup counter at one because the holder remained in ancestry.
+This counterfactual identifies the native suppression boundary independently of process age.
+The payload carried distinct `session_id` values for the initial chat and `/new` while both reported `source=startup`, so source alone cannot distinguish the chats.
+The corrected native transport passes that existing identity to composed startup; receipt publication occurs only after host ownership and a completed digest.
+This fixture-only trust bypass tests event delivery, not installation trust, and is not an operator repair recommendation.
+Process age alone does not establish the historical outcome of a native event.
+The live entry point now also invokes `tests/codex-sessionstart-newchat.py` to verify automatic same-process new-chat delivery and fresh model-visible fleet context.
+Its relevant output is:
+
+```text
+ok - Codex TUI /new delivered two distinct native session IDs, one host owner, and fresh fleet context in each chat
+```
+
+The deterministic native-identity test also replays an earlier chat after a later one and verifies that a pre-existing receipt cannot conceal a competing live owner.
+
+The supported-axis review leaves Claude, OpenCode, Pi, and Grok native transports and Kimi's absence of a tracked startup transport unchanged.
+The unresolved-ancestry preflight applies to the composed command for every harness; verified-host refusal behavior is unchanged.
+The tmux, Herdr, Zellij, Orca, and cmux runtime adapters are below this boundary and are unchanged.
+
 ### Codex PID-namespace startup boundary
 
 The boundary was reproduced on 2026-09-04 and reverified from both the repository root and a child directory on 2026-09-08 with Codex CLI 0.153.2 on Linux.
@@ -37,7 +94,7 @@ Its stdout was the complete ordered session-start digest, beginning with `SESSIO
 The oversized fixture placed an authoritative sentinel between large prefix and suffix context regions, and Codex returned that exact middle line without using a command tool.
 That verifies the SessionStart handler passes the complete digest directly to model context instead of replacing its middle with a spill preview.
 On Codex CLI 0.153.2 that no-approval session reported `permission_mode=bypassPermissions`, so the native payload could not distinguish it from the unrestricted label.
-Deterministic hook-interface coverage also observed that `default`, `dontAsk`, and `bypassPermissions` all invoked the official session-start path, while an already-owned lock stayed silent.
+Deterministic hook-interface coverage also observed that `default`, `dontAsk`, and `bypassPermissions` all invoked the official session-start path, while the historical process guard kept an already-owned lock silent; current native chat-idempotence coverage supersedes that process-only behavior.
 
 The child-directory counterfactual ran `tests/fm-sessionstart-nudge.test.sh` with Git 2.53.0 and GNU Bash 5.3.9 on 2026-09-08.
 Before Git root resolution, the executable hook test failed with `not ok - Codex child hook lost startup output:` because the hook silently returned no digest.

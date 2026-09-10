@@ -604,6 +604,9 @@ families_for_changed_path() {
     tests/fm-test-run.test.sh)
       printf '%s\n' pure-contract-unit
       ;;
+    tests/codex-sessionstart-newchat.py)
+      printf '%s\n' live-harness-optin
+      ;;
     tests/fm-backend-herdr-eventwait.test.py)
       printf '%s\n' real-herdr-gated
       printf '%s\n' backend-dispatch
